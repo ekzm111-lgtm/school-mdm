@@ -1,0 +1,49 @@
+{
+  "name": "school-mdm",
+  "version": "1.0.0",
+  "description": "학교 태블릿 MDM 관리 시스템",
+  "main": "main/main.js",
+  "scripts": {
+    "dev": "next dev renderer",
+    "electron:build": "next build renderer && electron-builder"
+  },
+  "build": {
+    "appId": "com.school.mdm",
+    "productName": "School-MDM",
+    "win": {
+      "target": [
+        "portable"
+      ],
+      "artifactName": "School-MDM-Portable.${ext}",
+      "requestedExecutionLevel": "asInvoker"
+    },
+    "extraResources": [
+      {
+        "from": "resources",
+        "to": "resources",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "files": [
+      "main/**/*",
+      "renderer/out/**/*"
+    ]
+  },
+  "dependencies": {
+    "@devicefarmer/adbkit": "^3.2.6",
+    "cors": "^2.8.6",
+    "express": "^4.18.2",
+    "node-cron": "^3.0.3",
+    "socket.io": "^4.7.2",
+    "socket.io-client": "^4.8.3"
+  },
+  "devDependencies": {
+    "electron": "^25.0.0",
+    "electron-builder": "^24.4.0",
+    "next": "^13.4.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  }
+}

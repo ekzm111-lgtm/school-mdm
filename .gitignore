@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+jspm_packages/
+web_modules/
+
+# Next.js build output
+.next/
+out/
+
+# Electron-builder output
+dist/
+release/
+
+# Operating System files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
+
+# Local config & aliases
+device_aliases.json
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local

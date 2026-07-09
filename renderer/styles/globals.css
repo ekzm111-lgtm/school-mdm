@@ -1,0 +1,155 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap');
+
+:root {
+  --bg:         #f0f4f8;
+  --bg-card:    #ffffff;
+  --bg-card2:   #f8fafc;
+  --bg-sidebar: #1e293b;
+  --bg-topbar:  #ffffff;
+
+  --border:     #e2e8f0;
+  --border-md:  #cbd5e1;
+
+  --primary:    #4f46e5;
+  --primary-bg: #eef2ff;
+
+  --green:      #16a34a;
+  --green-bg:   #dcfce7;
+  --red:        #dc2626;
+  --red-bg:     #fee2e2;
+  --amber:      #d97706;
+  --amber-bg:   #fef3c7;
+  --cyan:       #0891b2;
+  --cyan-bg:    #cffafe;
+
+  --text:       #0f172a;
+  --text-sub:   #334155;
+  --text-dim:   #64748b;
+  --text-muted: #94a3b8;
+
+  --font:   'Outfit', sans-serif;
+  --mono:   'JetBrains Mono', monospace;
+  --radius: 12px;
+  --radius-sm: 8px;
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.06);
+  --shadow:    0 4px 12px rgba(0,0,0,0.10);
+  --shadow-lg: 0 10px 30px rgba(0,0,0,0.12);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+
+body {
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+}
+
+::-webkit-scrollbar { width: 5px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--border-md); border-radius: 3px; }
+
+/* 카드 */
+.card-base {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+}
+
+/* 배지 */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  border-radius: 99px;
+  font-size: 12px;
+  font-weight: 700;
+}
+.badge-online  { background: var(--green-bg); color: var(--green); }
+.badge-offline { background: var(--red-bg);   color: var(--red); }
+.badge-kiosk   { background: var(--primary-bg); color: var(--primary); }
+.badge-locked  { background: var(--amber-bg); color: var(--amber); }
+
+/* 버튼 */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: var(--radius-sm);
+  font-family: var(--font);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  border: none;
+  transition: all 0.14s ease;
+  white-space: nowrap;
+}
+.btn-primary {
+  background: var(--primary);
+  color: #fff;
+}
+.btn-primary:hover { background: #4338ca; box-shadow: var(--shadow); }
+
+.btn-ghost {
+  background: #fff;
+  color: var(--text-sub);
+  border: 1.5px solid var(--border-md);
+}
+.btn-ghost:hover { background: var(--bg-card2); border-color: #94a3b8; color: var(--text); }
+
+.btn-danger {
+  background: var(--red-bg);
+  color: var(--red);
+  border: 1.5px solid #fca5a5;
+}
+.btn-danger:hover { background: var(--red); color: #fff; border-color: var(--red); }
+
+.btn-success {
+  background: var(--green-bg);
+  color: var(--green);
+  border: 1.5px solid #86efac;
+}
+.btn-success:hover { background: var(--green); color: #fff; border-color: var(--green); }
+
+.btn-sm { padding: 6px 12px; font-size: 12.5px; }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* 인풋 */
+input, select, textarea {
+  font-family: var(--font);
+  background: #fff;
+  border: 1.5px solid var(--border-md);
+  color: var(--text);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  font-size: 13px;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+input:focus, select:focus, textarea:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(79,70,229,0.15);
+}
+input::placeholder, textarea::placeholder { color: var(--text-muted); }
+select option { background: #fff; color: var(--text); }
+
+/* 애니메이션 */
+@keyframes pulse-dot {
+  0%,100% { opacity:1; transform:scale(1); }
+  50%      { opacity:0.5; transform:scale(0.7); }
+}
+@keyframes fade-in {
+  from { opacity:0; transform:translateY(6px); }
+  to   { opacity:1; transform:translateY(0); }
+}
+@keyframes slide-in {
+  from { opacity:0; transform:translateX(16px); }
+  to   { opacity:1; transform:translateX(0); }
+}
+.animate-fade  { animation: fade-in  0.26s ease both; }
+.animate-slide { animation: slide-in 0.26s ease both; }
