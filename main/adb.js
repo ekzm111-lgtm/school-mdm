@@ -12,6 +12,7 @@ class AdbManager extends EventEmitter {
     this.devices = new Map(); // serial → deviceInfo
     this.socketDevices = new Map(); // serial → socketInfo (Device Owner 클라이언트들)
     this.pollingInterval = null;
+    this.pollCount = 0; // 폴링 카운트 추가 (배터리 등의 주기적 갱신을 조절하여 CPU 과부하 방지)
     this.adbPath = this._resolveAdbPath();
     const { app } = require('electron');
     // 패키징 상태일 때는 실행 파일과 같은 경로(즉, dist나 설치 폴더)에 device_aliases.json을 위치시켜 다른 PC 유실 방지
@@ -134,9 +135,25 @@ class AdbManager extends EventEmitter {
         adbSerials.push(serial);
 
         const existing = this.devices.get(serial) || {};
-        const model = await this._getModel(serial);
-        const battery = await this._getBatteryLevel(serial);
-        const ip = await this._getIp(serial);
+
+        // 모델명 캐싱 (이미 존재하면 불필요한 adb shell 호출 차단)
+        const model = existing.model && existing.model !== '알 수 없음' 
+          ? existing.model 
+          : (await this._getModel(serial) || existing.model || '알 수 없음');
+          
+        // IP 캐싱 (이미 존재하면 불필요한 adb shell 호출 차단)
+        const ip = existing.ip 
+          ? existing.ip 
+          : (await this._getIp(serial) || existing.ip || '');
+
+        // 배터리는 5회에 1번만 폴링하여 리소스 낭비 차단
+        let battery = existing.battery ?? 0;
+        if (existing.battery === undefined || existing.battery === 0 || this.pollCount % 5 === 0) {
+          const freshBattery = await this._getBatteryLevel(serial);
+          if (freshBattery !== null) {
+            battery = freshBattery;
+          }
+        }
 
         const meta = this.deviceAliases.get(serial) || { alias: '', group: '' };
         this.devices.set(serial, {
@@ -182,6 +199,7 @@ class AdbManager extends EventEmitter {
       }
 
       this.emit('device-update', this.getDevices());
+      this.pollCount++;
     } catch (e) {
       console.error('[ADB] refreshDevices error:', e);
     }
