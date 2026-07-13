@@ -48,6 +48,12 @@ contextBridge.exposeInMainWorld('mdm', {
   // 앱 강제 제거 (삭제)
   uninstallApp: (serial, packageName) => ipcRenderer.invoke('uninstall-app', serial, packageName),
 
+  // 기기 위치 카테고리 (그룹) 설정
+  setDeviceGroup: (serial, group) => ipcRenderer.invoke('set-device-group', serial, group),
+
+  // 다운로드 폴더 전체 비우기
+  clearDownloadFolder: (serial) => ipcRenderer.invoke('clear-download-folder', serial),
+
   // 서버 IP 조회
   getServerIp: () => ipcRenderer.invoke('get-server-ip'),
 });

@@ -25,7 +25,12 @@ class AdbManager extends EventEmitter {
       if (fs.existsSync(this.aliasesPath)) {
         const data = JSON.parse(fs.readFileSync(this.aliasesPath, 'utf8'));
         for (const key in data) {
-          this.deviceAliases.set(key, data[key]);
+          const val = data[key];
+          if (typeof val === 'string') {
+            this.deviceAliases.set(key, { alias: val, group: '' });
+          } else {
+            this.deviceAliases.set(key, { alias: val.alias || '', group: val.group || '' });
+          }
         }
       }
     } catch (e) {
@@ -34,12 +39,29 @@ class AdbManager extends EventEmitter {
   }
 
   setDeviceAlias(serial, alias) {
-    const fs = require('fs');
-    if (!alias || alias.trim() === '') {
+    const existing = this.deviceAliases.get(serial) || { alias: '', group: '' };
+    existing.alias = (alias || '').trim();
+    if (!existing.alias && !existing.group) {
       this.deviceAliases.delete(serial);
     } else {
-      this.deviceAliases.set(serial, alias.trim());
+      this.deviceAliases.set(serial, existing);
     }
+    this._saveMetadata();
+  }
+
+  setDeviceGroup(serial, group) {
+    const existing = this.deviceAliases.get(serial) || { alias: '', group: '' };
+    existing.group = (group || '').trim();
+    if (!existing.alias && !existing.group) {
+      this.deviceAliases.delete(serial);
+    } else {
+      this.deviceAliases.set(serial, existing);
+    }
+    this._saveMetadata();
+  }
+
+  _saveMetadata() {
+    const fs = require('fs');
     try {
       const obj = {};
       for (const [k, v] of this.deviceAliases.entries()) {
@@ -47,7 +69,7 @@ class AdbManager extends EventEmitter {
       }
       fs.writeFileSync(this.aliasesPath, JSON.stringify(obj, null, 2), 'utf8');
     } catch (e) {
-      console.error('[ADB] saveAliases error:', e);
+      console.error('[ADB] saveMetadata error:', e);
     }
     this.refreshDevices();
   }
@@ -72,8 +94,13 @@ class AdbManager extends EventEmitter {
   // ADB 명령 실행 (Promise 래핑)
   _exec(args) {
     return new Promise((resolve, reject) => {
-      exec(`"${this.adbPath}" ${args}`, { timeout: 10000 }, (err, stdout, stderr) => {
-        if (err) return resolve(''); // 에러 나더라도 프로세스 안 죽게 공백 리턴
+      exec(`"${this.adbPath}" ${args}`, { timeout: 60000 }, (err, stdout, stderr) => {
+        if (err) {
+          const error = new Error(err.message);
+          error.stderr = stderr;
+          error.stdout = stdout;
+          return reject(error);
+        }
         resolve(stdout.trim());
       });
     });
@@ -100,10 +127,12 @@ class AdbManager extends EventEmitter {
         const battery = await this._getBatteryLevel(serial);
         const ip = await this._getIp(serial);
 
+        const meta = this.deviceAliases.get(serial) || { alias: '', group: '' };
         this.devices.set(serial, {
           serial,
           model: model || existing.model || '알 수 없음',
-          alias: this.deviceAliases.get(serial) || '',
+          alias: meta.alias,
+          group: meta.group,
           battery: battery ?? existing.battery ?? 0,
           ip: ip || existing.ip || '',
           state: 'online',
@@ -118,10 +147,12 @@ class AdbManager extends EventEmitter {
       if (this.socketDevices) {
         for (const [serial, socketInfo] of this.socketDevices.entries()) {
           const existing = this.devices.get(serial) || {};
+          const meta = this.deviceAliases.get(serial) || { alias: '', group: '' };
           this.devices.set(serial, {
             ...existing,
             ...socketInfo,
-            alias: this.deviceAliases.get(serial) || existing.alias || '',
+            alias: meta.alias || existing.alias || '',
+            group: meta.group || existing.group || '',
             // ADB에 없더라도 소켓이 online이면 online 처리
             state: socketInfo.state === 'online' ? 'online' : (existing.state || 'offline')
           });
@@ -251,6 +282,22 @@ class AdbManager extends EventEmitter {
       await this._exec(`-s ${serial} shell pm uninstall ${packageName}`);
       return { ok: true };
     } catch (e) { return { ok: false, error: e }; }
+  }
+
+  async clearDownloadFolder(serial) {
+    try {
+      // 다운로드 폴더 자체를 삭제 후 다시 생성하여 와일드카드 확장 오류 방지 및 하위 폴더 전체 삭제
+      await this._exec(`-s ${serial} shell "rm -rf /sdcard/Download && mkdir /sdcard/Download"`);
+      // 미디어 라이브러리 스캔을 통해 탐색기에서 즉각 반영되도록 갱신
+      await this._exec(`-s ${serial} shell "am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d file:///sdcard/Download"`);
+      return { ok: true };
+    } catch (e) {
+      let errMsg = e.message || '다운로드 폴더 비우기 실패';
+      if (errMsg.includes('device') && errMsg.includes('not found')) {
+        errMsg = '태블릿이 ADB 연결 상태가 아닙니다. USB 케이블 연결 또는 WiFi 무선 디버깅 연결 상태를 확인하세요.';
+      }
+      return { ok: false, error: errMsg };
+    }
   }
 
   async getBattery(serial) {

@@ -2,7 +2,7 @@ import { useState } from 'react';
 
 const isMdm = typeof window !== 'undefined' && !!window.mdm;
 
-export default function BroadcastModal({ devices, onClose }) {
+export default function BroadcastModal({ devices, onClose, title = "알림 전송" }) {
   const [message, setMessage] = useState('');
   const [sending, setSending] = useState(false);
   const [results, setResults] = useState([]);
@@ -29,13 +29,13 @@ export default function BroadcastModal({ devices, onClose }) {
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal glass animate-fade" onClick={e => e.stopPropagation()}>
         <div className="modal-header">
-          <h2>📢 전체 알림 전송</h2>
+          <h2>📢 {title}</h2>
           <button className="close-btn" onClick={onClose}>✕</button>
         </div>
 
         <div className="modal-body">
           <div className="target-info">
-            총 <strong>{devices.length}대</strong>의 온라인 기기에 알림을 전송합니다.
+            총 <strong>{devices.length}대</strong>의 대상 기기에 알림을 전송합니다.
           </div>
 
           <div className="form-group">

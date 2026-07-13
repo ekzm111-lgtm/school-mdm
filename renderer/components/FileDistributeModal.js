@@ -10,7 +10,10 @@ export default function FileDistributeModal({ devices, onClose }) {
   const [progress, setProgress] = useState(0);
   const [statusText, setStatusText] = useState('');
   const [isDragOver, setIsDragOver] = useState(false);
+  const [selectedSerials, setSelectedSerials] = useState([]);
   const fileInputRef = useRef(null);
+
+  const onlineDevices = devices.filter(d => d.state === 'online');
 
   useEffect(() => {
     // 전역적인 브라우저 파일 드롭 기본 동작 방지 및 복사 커서 강제화 (🚫 방지)
@@ -23,6 +26,9 @@ export default function FileDistributeModal({ devices, onClose }) {
     window.addEventListener('dragenter', preventDefault);
     window.addEventListener('dragover', preventDefault);
     window.addEventListener('drop', preventDefault);
+
+    // 기본적으로 모든 온라인 기기 선택 상태로 초기화
+    setSelectedSerials(onlineDevices.map(d => d.serial));
 
     if (isMdm && window.mdm.onDistributeProgress) {
       window.mdm.onDistributeProgress(({ progress, state }) => {
@@ -40,12 +46,11 @@ export default function FileDistributeModal({ devices, onClose }) {
         window.mdm.removeDistributeProgress();
       }
     };
-  }, []);
+  }, [devices]);
 
   const handleFileChange = (e) => {
     const file = e.target.files[0];
     if (file) {
-      // Electron 환경에서 파일의 path 속성을 획득할 수 있습니다.
       setSelectedFile({
         name: file.name,
         path: file.path || '',
@@ -90,17 +95,32 @@ export default function FileDistributeModal({ devices, onClose }) {
     }
   };
 
+  // 선택 제어 함수들
+  const selectAll = () => setSelectedSerials(onlineDevices.map(d => d.serial));
+  const selectNone = () => setSelectedSerials([]);
+  const selectInvert = () => {
+    const allSerials = onlineDevices.map(d => d.serial);
+    setSelectedSerials(prev => allSerials.filter(s => !prev.includes(s)));
+  };
+  const toggleSelect = (serial) => {
+    setSelectedSerials(prev =>
+      prev.includes(serial) ? prev.filter(s => s !== serial) : [...prev, serial]
+    );
+  };
+
   const handleSend = async () => {
     if (!selectedFile || !selectedFile.path) return;
+    if (selectedSerials.length === 0) {
+      alert("배포할 대상 기기를 최소 1대 이상 선택해 주십시오.");
+      return;
+    }
     setSending(true);
     setResult(null);
     setProgress(0);
     setStatusText('배포 시작 준비 중...');
 
-    const onlineSerials = devices.filter(d => d.state === 'online').map(d => d.serial);
-    
     if (isMdm) {
-      const res = await window.mdm.distributeFile(selectedFile.path, onlineSerials, { 
+      const res = await window.mdm.distributeFile(selectedFile.path, selectedSerials, { 
         createShortcut,
         serverIp: "nonepithelial-unbased-reece.ngrok-free.dev"
       });
@@ -117,41 +137,70 @@ export default function FileDistributeModal({ devices, onClose }) {
         });
       }
     } else {
-      // 데모 모드 작동 방식 (게이지 시뮬레이션)
+      // 데모 모드
       setProgress(10);
       setStatusText('[데모] 전송 준비 중...');
       await new Promise(r => setTimeout(r, 450));
-      setProgress(45);
-      setStatusText('[데모] 파일 복사 중... (45%)');
-      await new Promise(r => setTimeout(r, 450));
-      setProgress(80);
-      setStatusText('[데모] 파일 복사 중... (80%)');
+      setProgress(50);
+      setStatusText('[데모] 파일 복사 중... (50%)');
       await new Promise(r => setTimeout(r, 450));
       setProgress(100);
-      setStatusText('[데모] 복사 및 전송 완료');
+      setStatusText('[데모] 전송 완료');
       
       setResult({
         success: true,
-        msg: `[데모] 총 ${onlineSerials.length}대의 기기에 파일 배포를 요청했습니다.\n(2초 후 이 창이 자동으로 닫힙니다.)`
+        msg: `[데모] 총 ${selectedSerials.length}대의 기기에 파일 배포를 요청했습니다.\n(2초 후 이 창이 자동으로 닫힙니다.)`
       });
       setTimeout(() => { onClose(); }, 2000);
     }
     setSending(false);
   };
 
-  const onlineDevicesCount = devices.filter(d => d.state === 'online').length;
-
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal glass animate-fade" onClick={e => e.stopPropagation()}>
         <div className="modal-header">
-          <h2>📁 여러 기기에 일괄 파일 배포</h2>
+          <h2>📁 선택 파일 배포</h2>
           <button className="close-btn" onClick={onClose}>✕</button>
         </div>
 
         <div className="modal-body">
-          <div className="target-info">
-            대상: 총 <strong>{onlineDevicesCount}대</strong>의 온라인 기기
+          {/* 배포 대상 기기 선별 박스 */}
+          <div className="target-select-section">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+              <span style={{ fontSize: 12.5, fontWeight: 700, color: '#334155' }}>
+                🎯 배포 대상 지정 ({selectedSerials.length}대 선택됨)
+              </span>
+              <div style={{ display: 'flex', gap: 4 }}>
+                <button className="btn-action" onClick={selectAll}>전체 선택</button>
+                <button className="btn-action" onClick={selectNone}>선택 해제</button>
+                <button className="btn-action" onClick={selectInvert}>선택 반전 🔄</button>
+              </div>
+            </div>
+
+            <div className="device-list-scroller">
+              {onlineDevices.length === 0 ? (
+                <div className="no-devices">연결된 온라인 기기가 없습니다.</div>
+              ) : (
+                onlineDevices.map(d => (
+                  <div key={d.serial} className="device-select-row" onClick={() => toggleSelect(d.serial)}>
+                    <input
+                      type="checkbox"
+                      checked={selectedSerials.includes(d.serial)}
+                      onChange={() => {}} // onClick에 의해 처리됨
+                      style={{ marginRight: 8, cursor: 'pointer' }}
+                    />
+                    <div style={{ flex: 1, overflow: 'hidden' }}>
+                      <span className="dev-name">{d.alias || d.model}</span>
+                      <span className="dev-serial">({d.serial})</span>
+                    </div>
+                    {d.group && (
+                      <span className="dev-group">{d.group}</span>
+                    )}
+                  </div>
+                ))
+              )}
+            </div>
           </div>
 
           <div className="form-group">
@@ -163,7 +212,6 @@ export default function FileDistributeModal({ devices, onClose }) {
               style={{ display: 'none' }}
             />
             
-            {/* 드래그 앤 드롭 드롭존 영역 */}
             <div 
               onDragEnter={handleDragOver}
               onDragOver={handleDragOver}
@@ -173,7 +221,7 @@ export default function FileDistributeModal({ devices, onClose }) {
               style={{
                 border: isDragOver ? '2px dashed #4f46e5' : '2px dashed #cbd5e1',
                 background: isDragOver ? '#eef2ff' : '#ffffff',
-                padding: '24px 20px',
+                padding: '20px 16px',
                 borderRadius: 12,
                 textAlign: 'center',
                 cursor: 'pointer',
@@ -181,62 +229,53 @@ export default function FileDistributeModal({ devices, onClose }) {
                 display: 'flex',
                 flexDirection: 'column',
                 alignItems: 'center',
-                gap: 8,
-                boxShadow: isDragOver ? '0 0 0 3px rgba(79,70,229,0.1)' : 'none'
+                gap: 6
               }}
-              onMouseEnter={e => { if(!isDragOver) e.currentTarget.style.borderColor = '#4f46e5'; }}
-              onMouseLeave={e => { if(!isDragOver) e.currentTarget.style.borderColor = '#cbd5e1'; }}
             >
-              <span style={{ fontSize: 32 }}>📁</span>
+              <span style={{ fontSize: 28 }}>📁</span>
               <div style={{ fontSize: 13, fontWeight: 700, color: '#334155' }}>
-                파일을 이 영역에 마우스로 끌어다 놓거나 클릭하여 선택
-              </div>
-              <div style={{ fontSize: 11, color: '#94a3b8' }}>
-                (PDF, 이미지, 비디오, APK 등 모든 교육용 파일 지원)
+                파일을 이 영역에 끌어다 놓거나 클릭하여 선택
               </div>
             </div>
 
-            {/* 선택된 파일 요약 정보 */}
             {selectedFile && (
               <div style={{
                 display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px',
-                background: '#f8fafc', borderRadius: 8, border: '1px solid #e2e8f0', fontSize: 12.5
+                background: '#f8fafc', borderRadius: 8, border: '1px solid #e2e8f0', fontSize: 12
               }}>
-                <span style={{ fontSize: 15 }}>📄</span>
+                <span style={{ fontSize: 14 }}>📄</span>
                 <div style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 600, color: '#0f172a' }}>
-                  {selectedFile.name} <span style={{ fontWeight: 500, color: '#64748b', fontSize: 11 }}>({selectedFile.size})</span>
+                  {selectedFile.name} <span style={{ fontWeight: 500, color: '#64748b', fontSize: 10.5 }}>({selectedFile.size})</span>
                 </div>
               </div>
             )}
             
-            {/* 바로가기 생성 옵션 체크박스 추가 */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 2 }}>
               <input
                 type="checkbox"
                 id="chkShortcut"
                 checked={createShortcut}
                 onChange={e => setCreateShortcut(e.target.checked)}
                 disabled={selectedFile && selectedFile.name.endsWith('.apk')}
-                style={{ cursor: 'pointer', width: 15, height: 15 }}
+                style={{ cursor: 'pointer', width: 14, height: 14 }}
               />
               <label 
                 htmlFor="chkShortcut" 
                 style={{ 
-                  fontSize: 12.5, fontWeight: 600, color: selectedFile?.name.endsWith('.apk') ? '#94a3b8' : '#475569', 
+                  fontSize: 12, fontWeight: 600, color: selectedFile?.name.endsWith('.apk') ? '#94a3b8' : '#475569', 
                   cursor: selectedFile?.name.endsWith('.apk') ? 'not-allowed' : 'pointer', userSelect: 'none' 
                 }}
               >
-                태블릿 홈 화면에 파일 바로가기 생성 (APK 파일은 제외)
+                태블릿 홈 화면에 파일 바로가기 생성 (APK 파일 제외)
               </label>
             </div>
           </div>
 
-          {/* 실시간 전송 게이지 UI 추가 */}
           {sending && (
             <div style={{
               background: '#f8fafc', padding: 12, borderRadius: 8, border: '1px solid #e2e8f0',
-              display: 'flex', flexDirection: 'column', gap: 6, marginTop: 4
-            }} className="animate-fade">
+              display: 'flex', flexDirection: 'column', gap: 6, marginTop: 2
+            }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, fontWeight: 700, color: '#4f46e5' }}>
                 <span>{statusText}</span>
                 <span>{progress}%</span>
@@ -263,9 +302,9 @@ export default function FileDistributeModal({ devices, onClose }) {
           <button
             className="btn btn-primary"
             onClick={handleSend}
-            disabled={sending || !selectedFile || onlineDevicesCount === 0}
+            disabled={sending || !selectedFile || selectedSerials.length === 0}
           >
-            {sending ? '📤 파일 배포 중...' : '📁 일괄 배포'}
+            {sending ? '📤 전송 중...' : '🚀 선택 기기 배포'}
           </button>
         </div>
       </div>
@@ -273,83 +312,95 @@ export default function FileDistributeModal({ devices, onClose }) {
       <style jsx>{`
         .modal-overlay {
           position: fixed; inset: 0;
-          background: rgba(0,0,0,0.6);
+          background: rgba(15, 23, 42, 0.7);
           display: flex; align-items: center; justify-content: center;
-          z-index: 1000;
+          z-index: 1500;
           backdrop-filter: blur(4px);
         }
-        .modal { width: 500px; background: #ffffff; border-radius: 16px; box-shadow: 0 20px 60px rgba(0,0,0,0.25); overflow: hidden; }
+        .modal { width: 520px; background: #ffffff; border-radius: 16px; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.25); overflow: hidden; }
         .modal-header {
           display: flex; align-items: center; justify-content: space-between;
-          padding: 18px 20px;
+          padding: 16px 20px;
           border-bottom: 1px solid #e2e8f0;
         }
-        .modal-header h2 { font-size: 16px; font-weight: 700; color: #0f172a; }
+        .modal-header h2 { font-size: 15px; font-weight: 700; color: #0f172a; margin: 0; }
         .close-btn {
           background: none; border: none; color: #64748b;
           cursor: pointer; font-size: 16px; padding: 4px 8px; border-radius: 6px;
         }
         .close-btn:hover { background: #f1f5f9; }
         .modal-body { padding: 20px; display: flex; flex-direction: column; gap: 14px; }
-        .target-info {
-          font-size: 13px; color: #64748b;
+        
+        .target-select-section {
+          background: #f8fafc;
+          border: 1px solid #e2e8f0;
+          border-radius: 10px;
           padding: 10px 12px;
-          background: #f8fafc;
-          border-radius: 8px;
-          border: 1px solid #e2e8f0;
         }
-        .target-info strong { color: #4f46e5; }
-        .form-group { display: flex; flex-direction: column; gap: 8px; }
-        .form-group label { font-size: 12px; font-weight: 600; color: #64748b; }
-        .file-info-box {
-          flex: 1;
-          display: flex;
-          align-items: center;
-          border: 1px solid #e2e8f0;
-          background: #f8fafc;
-          padding: 8px 12px;
-          border-radius: 8px;
-          font-size: 13px;
-          color: #0f172a;
-          overflow: hidden;
-          text-overflow: ellipsis;
-          white-space: nowrap;
+        .btn-action {
+          background: #ffffff; border: 1px solid #cbd5e1; color: #475569;
+          font-size: 11px; font-weight: 600; padding: 3px 6px; border-radius: 4px;
+          cursor: pointer; transition: all 0.1s;
         }
+        .btn-action:hover { background: #f1f5f9; border-color: #94a3b8; }
+        
+        .device-list-scroller {
+          max-height: 120px;
+          overflow-y: auto;
+          background: #ffffff;
+          border: 1px solid #e2e8f0;
+          border-radius: 6px;
+          margin-top: 4px;
+        }
+        .no-devices { font-size: 12px; color: #94a3b8; text-align: center; padding: 16px; }
+        
+        .device-select-row {
+          display: flex; align-items: center; justify-content: space-between;
+          padding: 6px 10px; border-bottom: 1px solid #f1f5f9;
+          cursor: pointer; font-size: 12px; transition: background 0.1s;
+        }
+        .device-select-row:last-child { border-bottom: none; }
+        .device-select-row:hover { background: #f8fafc; }
+        
+        .dev-name { font-weight: 700; color: #1e293b; }
+        .dev-serial { font-size: 11px; color: #64748b; margin-left: 4px; font-family: monospace; }
+        .dev-group {
+          font-size: 10.5px; font-weight: 600; background: #e0f2fe; color: #0369a1;
+          padding: 2px 6px; border-radius: 4px;
+        }
+
+        .form-group { display: flex; flex-direction: column; gap: 6px; }
+        .form-group label { font-size: 12px; font-weight: 600; color: #475569; }
+        
         .result-box {
-          padding: 12px;
-          border-radius: 8px;
-          font-size: 12.5px;
-          line-height: 1.5;
+          padding: 10px;
+          border-radius: 6px;
+          font-size: 12px;
+          line-height: 1.4;
           white-space: pre-line;
         }
-        .result-box.success {
-          background: #dcfce7;
-          border: 1px solid #86efac;
-          color: #16a34a;
-        }
-        .result-box.error {
-          background: #fee2e2;
-          border: 1px solid #fca5a5;
-          color: #dc2626;
-        }
+        .result-box.success { background: #dcfce7; border: 1px solid #86efac; color: #15803d; }
+        .result-box.error { background: #fee2e2; border: 1px solid #fca5a5; color: #b91c1c; }
+        
         .modal-footer {
           display: flex; justify-content: flex-end; gap: 8px;
-          padding: 14px 20px;
+          padding: 12px 20px;
           border-top: 1px solid #e2e8f0;
+          background: #f8fafc;
         }
         .btn {
           padding: 8px 16px;
-          border-radius: 8px;
-          font-size: 13px;
+          border-radius: 6px;
+          font-size: 12.5px;
           font-weight: 600;
           cursor: pointer;
           border: none;
         }
-        .btn-ghost { background: #f1f5f9; color: #475569; }
-        .btn-ghost:hover { background: #e2e8f0; }
+        .btn-ghost { background: #e2e8f0; color: #475569; }
+        .btn-ghost:hover { background: #cbd5e1; }
         .btn-primary { background: #4f46e5; color: #ffffff; }
         .btn-primary:hover { background: #4338ca; }
-        .btn:disabled { opacity: 0.6; cursor: not-allowed; }
+        .btn:disabled { opacity: 0.55; cursor: not-allowed; }
       `}</style>
     </div>
   );

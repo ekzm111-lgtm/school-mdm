@@ -11,6 +11,7 @@ export default function DeviceDetail({ device, onClose, onRefresh }) {
   const [kioskPkg, setKioskPkg] = useState('');
   const [volume, setVolume] = useState(8);
   const [nameTag, setNameTag] = useState('');
+  const [groupTag, setGroupTag] = useState('');
   const [locationResult, setLocationResult] = useState(null);
   const [showMirror, setShowMirror] = useState(false);
 
@@ -18,8 +19,9 @@ export default function DeviceDetail({ device, onClose, onRefresh }) {
   const { useEffect: useReactEffect } = require('react');
   useReactEffect(() => {
     setNameTag(device?.alias || '');
+    setGroupTag(device?.group || '');
     setLocationResult(null);
-  }, [device?.serial, device?.alias]);
+  }, [device?.serial, device?.alias, device?.group]);
 
   if (!device) return null;
 
@@ -44,6 +46,55 @@ export default function DeviceDetail({ device, onClose, onRefresh }) {
       onRefresh?.();
     } catch (err) {
       console.error('Failed to save alias:', err);
+    } finally {
+      setLoading('');
+    }
+  };
+
+  const handleSaveGroup = async () => {
+    setLoading('group');
+    try {
+      if (isMdm) {
+        await window.mdm.setDeviceGroup(device.serial, groupTag);
+      } else {
+        await fetch('http://localhost:3010/devices/group', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ serial: device.serial, group: groupTag })
+        });
+      }
+      onRefresh?.();
+    } catch (err) {
+      console.error('Failed to save group tag:', err);
+    } finally {
+      setLoading('');
+    }
+  };
+
+  const handleClearDownload = async () => {
+    if (!confirm("⚠️ 정말로 이 태블릿의 다운로드(Download) 폴더 내 모든 파일을 영구적으로 삭제하시겠습니까?\n이 작업은 되돌릴 수 없습니다.")) return;
+    setLoading('clearDownload');
+    try {
+      let result;
+      if (isMdm) {
+        result = await window.mdm.clearDownloadFolder(device.serial);
+      } else {
+        const response = await fetch('http://localhost:3010/devices/clear-download', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ serial: device.serial })
+        });
+        result = await response.json();
+      }
+
+      if (result && result.ok) {
+        alert("🎉 다운로드 폴더의 모든 파일이 깨끗하게 청소되었습니다!");
+      } else {
+        throw new Error(result?.error || "작업을 완료할 수 없습니다.");
+      }
+    } catch (err) {
+      console.error('Failed to clear download folder:', err);
+      alert("오류가 발생했습니다: " + err.message);
     } finally {
       setLoading('');
     }
@@ -259,6 +310,14 @@ export default function DeviceDetail({ device, onClose, onRefresh }) {
             onClick={() => run('unlock', () => window.mdm?.unlockDevice(d.serial))}
           >
             🔓 잠금 해제
+          </button>
+          <button
+            className="btn btn-ghost btn-sm"
+            disabled={!isOnline || loading === 'clearDownload'}
+            onClick={handleClearDownload}
+            style={{ gridColumn: 'span 2', marginTop: 6, background: '#fee2e2', color: '#dc2626', border: '1px solid #fca5a5' }}
+          >
+            {loading === 'clearDownload' ? '⏳ 삭제 중... 잠시만 기다려주세요' : '🗑️ 다운로드 폴더 전체 비우기'}
           </button>
         </div>
       </div>

@@ -7,6 +7,7 @@ import ConnectModal from '../components/ConnectModal';
 import BroadcastModal from '../components/BroadcastModal';
 import FileDistributeModal from '../components/FileDistributeModal';
 import ApkDownloadModal from '../components/ApkDownloadModal';
+import LocationManagerModal from '../components/LocationManagerModal';
 
 const isMdm = typeof window !== 'undefined' && !!window.mdm;
 
@@ -15,12 +16,15 @@ const DEMO_DEVICES = [];
 export default function Dashboard() {
   const [devices, setDevices]             = useState(DEMO_DEVICES);
   const [selectedDevice, setSelectedDevice] = useState(null);
+  const [checkedSerials, setCheckedSerials] = useState([]);
   const [activeTab, setActiveTab]         = useState('dashboard');
   const [showConnect, setShowConnect]     = useState(false);
-  const [showBroadcast, setShowBroadcast] = useState(false);
+  const [broadcastDevices, setBroadcastDevices] = useState(null);
+  const [broadcastTitle, setBroadcastTitle] = useState('알림 전송');
   const [showFileDistribute, setShowFileDistribute] = useState(false);
   const [showApkDownload, setShowApkDownload] = useState(false);
   const [showGuide, setShowGuide]         = useState(false);
+  const [showLocationManager, setShowLocationManager] = useState(false);
   const [loading, setLoading]             = useState('');
 
   useEffect(() => {
@@ -71,6 +75,44 @@ export default function Dashboard() {
     setLoading('');
   };
 
+  const handleToggleCheck = (serial) => {
+    setCheckedSerials(prev => 
+      prev.includes(serial) ? prev.filter(s => s !== serial) : [...prev, serial]
+    );
+  };
+
+  const handleClearDownloadAllSelected = async () => {
+    if (!isMdm) { alert('⚠️ 실제 태블릿이 연결되어야 동작합니다.'); return; }
+    const onlineChecked = devices.filter(d => checkedSerials.includes(d.serial) && d.state === 'online');
+    if (onlineChecked.length === 0) {
+      alert('선택된 기기 중 온라인 상태인 기기가 없습니다.');
+      return;
+    }
+    
+    if (!confirm(`선택한 ${onlineChecked.length}대의 온라인 기기의 다운로드 폴더를 모두 비우시겠습니까?`)) {
+      return;
+    }
+    
+    setLoading('clear_downloads');
+    let successCount = 0;
+    let failCount = 0;
+    for (const d of onlineChecked) {
+      try {
+        const res = await window.mdm.clearDownloadFolder(d.serial);
+        if (res && res.ok) {
+          successCount++;
+        } else {
+          failCount++;
+        }
+      } catch (err) {
+        failCount++;
+      }
+    }
+    setLoading('');
+    alert(`다운로드 폴더 비우기 완료!\n성공: ${successCount}대, 실패: ${failCount}대`);
+    setCheckedSerials([]);
+  };
+
   const tabLabel = { dashboard:'📊 대시보드', devices:'📱 기기 관리', kiosk:'🔒 키오스크', apps:'📦 앱 관리', logs:'📋 이용 로그' };
 
   return (
@@ -106,8 +148,30 @@ export default function Dashboard() {
               <button className="btn btn-ghost btn-sm" onClick={() => setShowGuide(true)}>❓ 사용법</button>
               <button className="btn btn-ghost btn-sm" onClick={() => setShowConnect(true)}>🔗 WiFi 연결</button>
               <button className="btn btn-ghost btn-sm" onClick={() => setShowApkDownload(true)}>📲 APK 다운로드</button>
-              <button className="btn btn-ghost btn-sm" onClick={() => setShowBroadcast(true)}>📢 전체 알림</button>
+              <button className="btn btn-ghost btn-sm" onClick={() => {
+                setBroadcastTitle('전체 알림 전송');
+                setBroadcastDevices(devices.filter(d => d.state === 'online'));
+              }}>📢 전체 알림</button>
               <button className="btn btn-ghost btn-sm" onClick={() => setShowFileDistribute(true)}>📁 파일 배포</button>
+              <button className="btn btn-ghost btn-sm" onClick={() => setShowLocationManager(true)} style={{ color:'#4f46e5', borderColor:'#c7d2fe', background:'#eef2ff' }}>🗂️ 장소 관리</button>
+              {checkedSerials.length > 0 && (
+                <div style={{ display: 'flex', gap: 6 }} className="animate-fade">
+                  <button className="btn btn-sm" onClick={handleClearDownloadAllSelected} disabled={!!loading} style={{ background: '#f59e0b', color: '#ffffff', borderColor: '#d97706', padding: '6px 12px', fontWeight: 700 }}>
+                    🧹 {loading === 'clear_downloads' ? '비우는 중...' : `선택 비우기 (${checkedSerials.length}대)`}
+                  </button>
+                  <button className="btn btn-sm" onClick={() => {
+                    const selectedOnline = devices.filter(d => checkedSerials.includes(d.serial) && d.state === 'online');
+                    if (selectedOnline.length === 0) {
+                      alert('선택된 기기 중 온라인 상태인 기기가 없습니다.');
+                      return;
+                    }
+                    setBroadcastTitle(`선택 알림 전송 (${selectedOnline.length}대)`);
+                    setBroadcastDevices(selectedOnline);
+                  }} disabled={!!loading} style={{ background: '#3b82f6', color: '#ffffff', borderColor: '#2563eb', padding: '6px 12px', fontWeight: 700 }}>
+                    💬 선택 알림
+                  </button>
+                </div>
+              )}
               <div style={{ width:1, height:24, background:'#e2e8f0', margin:'0 2px' }} />
               <button className="btn btn-danger btn-sm" onClick={handleLockAll} disabled={!!loading}>
                 🔒 {loading==='lock' ? '처리 중...' : '전체 잠금'}
@@ -135,7 +199,14 @@ export default function Dashboard() {
 
           {/* ── 기기 그리드 ── */}
           <div style={{ flex:1, overflowY:'auto', padding:'14px 20px 20px' }} className="animate-fade">
-            <DeviceGrid devices={devices} onSelect={setSelectedDevice} selected={selectedDevice} filter={activeTab} />
+            <DeviceGrid
+              devices={devices}
+              onSelect={setSelectedDevice}
+              selected={selectedDevice}
+              filter={activeTab}
+              checkedSerials={checkedSerials}
+              onToggleCheck={handleToggleCheck}
+            />
           </div>
         </main>
 
@@ -151,9 +222,22 @@ export default function Dashboard() {
 
       {showConnect   && <ConnectModal onClose={() => setShowConnect(false)} />}
       {showApkDownload && <ApkDownloadModal onClose={() => setShowApkDownload(false)} />}
-      {showBroadcast && <BroadcastModal devices={devices.filter(d => d.state==='online')} onClose={() => setShowBroadcast(false)} />}
+      {broadcastDevices && (
+        <BroadcastModal
+          devices={broadcastDevices}
+          title={broadcastTitle}
+          onClose={() => setBroadcastDevices(null)}
+        />
+      )}
       {showFileDistribute && <FileDistributeModal devices={devices} onClose={() => setShowFileDistribute(false)} />}
       {showGuide     && <GuideModal onClose={() => setShowGuide(false)} />}
+      {showLocationManager && (
+        <LocationManagerModal
+          devices={devices}
+          onClose={() => setShowLocationManager(false)}
+          onRefresh={() => window.mdm?.getDevices().then(setDevices)}
+        />
+      )}
     </>
   );
 }

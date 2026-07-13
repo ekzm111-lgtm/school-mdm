@@ -3,10 +3,77 @@ const path = require('path');
 const http = require('http');
 const express = require('express');
 const { Server } = require('socket.io');
+const { spawn } = require('child_process');
 const AdbManager = require('./adb');
 
 let mainWindow;
 let adbManager;
+
+// ─── ngrok 자동 시작 · 워치독 ───────────────────────────
+const NGROK_URL  = 'https://nonepithelial-unbased-reece.ngrok-free.dev';
+const NGROK_PORT = 3010;
+// 다른 PC에서도 ngrok이 구동되도록 본인의 ngrok authtoken을 여기에 입력하세요.
+// 공백으로 둘 경우 시스템에 등록된 글로벌 토큰을 사용합니다.
+const NGROK_AUTHTOKEN = '3Ankmw3lih9mgVp7WXc3llWLQug_4WxJzoG51aDaso6GLUzE'; 
+let ngrokProc    = null;
+let ngrokRestartTimer = null;
+
+/**
+ * ngrok 바이너리 경로 결정:
+ *   1순위 — EXE 패키징 시 resources/ngrok.exe (번들, 어떤 PC에도 설치 불필요)
+ *   2순위 — 개발 환경: 프로젝트 루트 resources/ngrok.exe
+ *   3순위 — 시스템 PATH의 ngrok (fallback)
+ */
+function resolveNgrokBin() {
+  const fs = require('fs');
+  // 패키징된 Portable EXE 실행 시
+  if (app.isPackaged) {
+    const bundled = path.join(process.resourcesPath, 'resources', 'ngrok.exe');
+    if (fs.existsSync(bundled)) return bundled;
+  }
+  // 개발 환경 (npm run dev)
+  const devPath = path.join(__dirname, '..', 'resources', 'ngrok.exe');
+  if (fs.existsSync(devPath)) return devPath;
+  // 최후 fallback: 시스템에 ngrok 설치돼 있으면
+  return process.platform === 'win32' ? 'ngrok.exe' : 'ngrok';
+}
+
+function startNgrok() {
+  if (ngrokProc) return;
+  const ngrokBin = resolveNgrokBin();
+  console.log('[ngrok] 터널 시작... 바이너리:', ngrokBin);
+
+  const args = [
+    'http', String(NGROK_PORT),
+    '--url=' + NGROK_URL,
+    '--log=stdout'
+  ];
+
+  if (NGROK_AUTHTOKEN) {
+    args.push('--authtoken=' + NGROK_AUTHTOKEN);
+  }
+
+  ngrokProc = spawn(ngrokBin, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+
+  ngrokProc.stdout.on('data', (d) => console.log('[ngrok]', d.toString().trim()));
+  ngrokProc.stderr.on('data', (d) => console.error('[ngrok ERR]', d.toString().trim()));
+
+  ngrokProc.on('exit', (code) => {
+    console.log('[ngrok] 프로세스 종료 (code:', code, ') — 5초 후 자동 재시작');
+    ngrokProc = null;
+    if (!app.isQuitting) {
+      ngrokRestartTimer = setTimeout(startNgrok, 5000);
+    }
+  });
+}
+
+function stopNgrok() {
+  clearTimeout(ngrokRestartTimer);
+  if (ngrokProc) {
+    ngrokProc.kill();
+    ngrokProc = null;
+  }
+}
 
 // ─── Socket.IO MDM 서버 구축 ───────────────────────────
 const cors = require('cors');
@@ -19,6 +86,10 @@ const io = new Server(server, {
 
 const tabletSockets = new Map(); // serial -> socket instance
 const socketDevices = new Map(); // serial -> deviceInfo
+const pendingClearRequests = new Map(); // serial -> resolve
+const pendingLocationRequests = new Map(); // serial -> resolve
+const pendingAppListRequests = new Map(); // serial -> resolve
+const pendingUninstallRequests = new Map(); // serial -> resolve
 
 io.on('connection', (socket) => {
   console.log('[Socket] Client connected:', socket.id);
@@ -41,6 +112,27 @@ io.on('connection', (socket) => {
 
     // ADB 매니저에 소켓으로 등록된 기기 정보 합쳐서 넘김
     adbManager?.setSocketDevices(socketDevices);
+    // 등록 즉시 UI 갱신
+    mainWindow?.webContents.send('device-update', adbManager?.getDevices() ?? []);
+  });
+
+  // 태블릿이 주기적으로 보내는 배터리/IP 하트비트
+  socket.on('heartbeat', (data) => {
+    const { serial, battery, charging, ip } = data || {};
+    if (!serial) return;
+    const existing = socketDevices.get(serial);
+    if (!existing) return;
+    const updated = {
+      ...existing,
+      battery:  battery  != null ? battery  : existing.battery,
+      charging: charging != null ? charging : existing.charging,
+      ip:       ip       || existing.ip,
+      lastSeen: new Date().toISOString()
+    };
+    socketDevices.set(serial, updated);
+    adbManager?.setSocketDevices(socketDevices);
+    // UI 실시간 반영
+    mainWindow?.webContents.send('device-update', adbManager?.getDevices() ?? []);
   });
 
   // 실시간 미러링 화면 및 상태 릴레이
@@ -67,6 +159,62 @@ io.on('connection', (socket) => {
       }
     }
     adbManager?.setSocketDevices(socketDevices);
+  });
+
+  socket.on('clear-download-done', (data) => {
+    console.log('[Socket] Received clear-download-done:', data);
+    const { serial } = data || {};
+    if (serial) {
+      const resolve = pendingClearRequests.get(serial);
+      if (resolve) {
+        pendingClearRequests.delete(serial);
+        resolve({
+          ok: data.success !== false,
+          deleted: data.deleted ?? 0,
+          error: data.error
+        });
+      }
+    }
+  });
+
+  socket.on('location-response', (data) => {
+    console.log('[Socket] Received location-response:', data);
+    const { serial } = data || {};
+    if (serial) {
+      const resolve = pendingLocationRequests.get(serial);
+      if (resolve) {
+        pendingLocationRequests.delete(serial);
+        if (data.error) {
+          resolve({ ok: false, error: data.error });
+        } else {
+          resolve({ ok: true, lat: data.lat, lng: data.lng });
+        }
+      }
+    }
+  });
+
+  socket.on('app-list-response', (data) => {
+    console.log('[Socket] Received app-list-response:', data);
+    const { serial } = data || {};
+    if (serial) {
+      const resolve = pendingAppListRequests.get(serial);
+      if (resolve) {
+        pendingAppListRequests.delete(serial);
+        resolve(data.apps || []);
+      }
+    }
+  });
+
+  socket.on('uninstall-done', (data) => {
+    console.log('[Socket] Received uninstall-done:', data);
+    const { serial } = data || {};
+    if (serial) {
+      const resolve = pendingUninstallRequests.get(serial);
+      if (resolve) {
+        pendingUninstallRequests.delete(serial);
+        resolve({ ok: data.success, error: data.error });
+      }
+    }
   });
 });
 
@@ -103,21 +251,21 @@ expressApp.post('/devices/location', async (req, res) => {
     return res.status(404).json({ ok: false, error: '태블릿이 소켓 서버에 오프라인 상태입니다.' });
   }
   try {
-    socket.emit('get-location');
-    const timeout = setTimeout(() => {
-      socket.removeAllListeners('location-response');
-      res.status(504).json({ ok: false, error: '태블릿 응답 시간 초과 (GPS가 꺼져있을 수 있습니다)' });
-    }, 10000);
-    
-    socket.once('location-response', (data) => {
-      clearTimeout(timeout);
-      socket.removeAllListeners('location-response');
-      if (data.error) {
-        res.status(400).json({ ok: false, error: data.error });
-      } else {
-        res.json({ ok: true, lat: data.lat, lng: data.lng });
-      }
+    const locationResult = await new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        pendingLocationRequests.delete(serial);
+        resolve({ ok: false, error: '태블릿 응답 시간 초과 (GPS가 꺼져있을 수 있습니다)' });
+      }, 10000);
+
+      pendingLocationRequests.set(serial, resolve);
+      socket.emit('get-location');
     });
+
+    if (locationResult.ok) {
+      res.json({ ok: true, lat: locationResult.lat, lng: locationResult.lng });
+    } else {
+      res.status(400).json({ ok: false, error: locationResult.error });
+    }
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
@@ -128,6 +276,28 @@ expressApp.post('/devices/uninstall', async (req, res) => {
   const { serial, packageName } = req.body;
   try {
     const result = await adbManager.uninstallApp(serial, packageName);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// 일반 브라우저 관리자를 위한 기기 위치 카테고리 (그룹) 변경 API
+expressApp.post('/devices/group', async (req, res) => {
+  const { serial, group } = req.body;
+  try {
+    adbManager.setDeviceGroup(serial, group);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// 일반 브라우저 관리자를 위한 다운로드 폴더 전체 비우기 API
+expressApp.post('/devices/clear-download', async (req, res) => {
+  const { serial } = req.body;
+  try {
+    const result = await adbManager.clearDownloadFolder(serial);
     res.json(result);
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
@@ -171,10 +341,10 @@ function createWindow() {
   const isDev = !app.isPackaged;
   if (isDev) {
     mainWindow.loadURL('http://localhost:3000');
-    mainWindow.webContents.openDevTools();
   } else {
     mainWindow.loadFile(path.join(__dirname, '../renderer/out/index.html'));
   }
+  mainWindow.webContents.openDevTools();
 }
 
 app.whenReady().then(async () => {
@@ -182,11 +352,24 @@ app.whenReady().then(async () => {
   adbManager = new AdbManager();
   await adbManager.init();
 
+  // ngrok 자동 시작 (프로그램 켜질 때마다 자동 터널 연결)
+  startNgrok();
+
   // ADB + Socket 기기 연동 이벤트 전달
   adbManager.on('device-update', (devices) => {
     mainWindow?.webContents.send('device-update', devices);
   });
   adbManager.startPolling();
+
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  });
+});
+
+// 앱 종료 전 ngrok 정리
+app.on('before-quit', () => {
+  app.isQuitting = true;
+  stopNgrok();
 });
 
 app.on('window-all-closed', () => {
@@ -256,19 +439,68 @@ ipcMain.handle('set-volume', async (_, serial, level) => {
   return adbManager?.setVolume(serial, level);
 });
 
-// 앱 목록 조회
+// 앱 목록 조회 (소켓 우선, ADB 폴백)
 ipcMain.handle('get-apps', async (_, serial) => {
-  return adbManager?.getInstalledApps(serial);
+  const socket = tabletSockets.get(serial);
+  if (socket) {
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        pendingAppListRequests.delete(serial);
+        resolve([]);
+      }, 8000);
+      pendingAppListRequests.set(serial, resolve);
+      socket.emit('get-app-list');
+    });
+  }
+  return adbManager?.getInstalledApps(serial) ?? [];
 });
 
-// 앱 강제 종료
+// 앱 강제 종료 (소켓 우선)
 ipcMain.handle('force-stop-app', async (_, serial, packageName) => {
+  const socket = tabletSockets.get(serial);
+  if (socket) {
+    socket.emit('force-stop-app', { packageName });
+    return { ok: true, via: 'socket' };
+  }
   return adbManager?.forceStopApp(serial, packageName);
 });
 
-// 앱 강제 삭제 (원격 앱 제거)
+// 앱 강제 삭제 (소켓 우선)
 ipcMain.handle('uninstall-app', async (_, serial, packageName) => {
+  const socket = tabletSockets.get(serial);
+  if (socket) {
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        pendingUninstallRequests.delete(serial);
+        resolve({ ok: false, error: 'timeout' });
+      }, 15000);
+      pendingUninstallRequests.set(serial, resolve);
+      socket.emit('uninstall-app', { packageName });
+    });
+  }
   return adbManager?.uninstallApp(serial, packageName);
+});
+
+// 다운로드 폴더 비우기 (소켓 우선, ADB 폴백)
+ipcMain.handle('clear-download-folder', async (_, serial) => {
+  const socket = tabletSockets.get(serial);
+  if (socket) {
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        pendingClearRequests.delete(serial);
+        resolve({ ok: false, error: '태블릿 응답 시간 초과 (소켓 연결 불안정)' });
+      }, 30000);
+
+      pendingClearRequests.set(serial, (result) => {
+        clearTimeout(timeout);
+        resolve(result);
+      });
+
+      socket.emit('clear-download');
+    });
+  }
+  // 소켓 연결이 없는 오프라인 상태일 때만 ADB fallback 시도
+  return adbManager?.clearDownloadFolder(serial);
 });
 
 // 배터리 정보
@@ -369,6 +601,17 @@ ipcMain.handle('set-device-alias', async (_, serial, alias) => {
   }
 });
 
+// 기기 위치 카테고리 (그룹) 설정 핸들러 추가
+ipcMain.handle('set-device-group', async (_, serial, group) => {
+  try {
+    adbManager.setDeviceGroup(serial, group);
+    return { ok: true };
+  } catch (err) {
+    console.error('Set device group error:', err);
+    return { ok: false, error: err.message };
+  }
+});
+
 // 실시간 기기 위치 쿼리 핸들러 추가 (Device Owner 불필요)
 ipcMain.handle('get-device-location', async (_, serial) => {
   const socket = tabletSockets.get(serial);
@@ -376,24 +619,13 @@ ipcMain.handle('get-device-location', async (_, serial) => {
     return { ok: false, error: '태블릿이 소켓 서버에 오프라인 상태입니다.' };
   }
   return new Promise((resolve) => {
-    // 소켓으로 위치 요청 전송
-    socket.emit('get-location');
-    
-    // 1회성 응답 리스너 (10초 타임아웃)
     const timeout = setTimeout(() => {
-      socket.removeAllListeners('location-response');
+      pendingLocationRequests.delete(serial);
       resolve({ ok: false, error: '태블릿 응답 시간 초과 (GPS 비활성화 또는 신호 지연)' });
     }, 10000);
     
-    socket.once('location-response', (data) => {
-      clearTimeout(timeout);
-      socket.removeAllListeners('location-response');
-      if (data.error) {
-        resolve({ ok: false, error: data.error });
-      } else {
-        resolve({ ok: true, lat: data.lat, lng: data.lng });
-      }
-    });
+    pendingLocationRequests.set(serial, resolve);
+    socket.emit('get-location');
   });
 });
 
@@ -433,3 +665,4 @@ ipcMain.handle('get-server-ip', async () => {
   }
   return localIp;
 });
+
