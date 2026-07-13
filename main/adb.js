@@ -14,14 +14,25 @@ class AdbManager extends EventEmitter {
     this.pollingInterval = null;
     this.adbPath = this._resolveAdbPath();
     const { app } = require('electron');
-    this.aliasesPath = path.join(app.getPath('userData'), 'device_aliases.json');
+    // 패키징 상태일 때는 실행 파일과 같은 경로(즉, dist나 설치 폴더)에 device_aliases.json을 위치시켜 다른 PC 유실 방지
+    this.aliasesPath = app.isPackaged 
+      ? path.join(path.dirname(process.execPath), 'device_aliases.json')
+      : path.join(app.getPath('userData'), 'device_aliases.json');
     this.deviceAliases = new Map();
     this._loadAliases();
   }
 
   _loadAliases() {
     const fs = require('fs');
+    const { app } = require('electron');
+    const oldAliasesPath = path.join(app.getPath('userData'), 'device_aliases.json');
     try {
+      // 새로운 경로에 파일이 없고 이전 경로에 파일이 있다면 자동 마이그레이션(이전 복구) 처리
+      if (this.aliasesPath !== oldAliasesPath && !fs.existsSync(this.aliasesPath) && fs.existsSync(oldAliasesPath)) {
+        console.log('[ADB] Migrating old device_aliases.json to new location:', this.aliasesPath);
+        fs.copyFileSync(oldAliasesPath, this.aliasesPath);
+      }
+
       if (fs.existsSync(this.aliasesPath)) {
         const data = JSON.parse(fs.readFileSync(this.aliasesPath, 'utf8'));
         for (const key in data) {

@@ -206,6 +206,20 @@ export default function Dashboard() {
               filter={activeTab}
               checkedSerials={checkedSerials}
               onToggleCheck={handleToggleCheck}
+              onSelectAll={setCheckedSerials}
+              onInvertSelect={(visibleSerials) => {
+                setCheckedSerials(prev => {
+                  const alreadyChecked = new Set(prev);
+                  const newSelected = [];
+                  for (const serial of visibleSerials) {
+                    if (!alreadyChecked.has(serial)) {
+                      newSelected.push(serial);
+                    }
+                  }
+                  const outsideScreen = prev.filter(s => !visibleSerials.includes(s));
+                  return [...outsideScreen, ...newSelected];
+                });
+              }}
             />
           </div>
         </main>

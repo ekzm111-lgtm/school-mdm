@@ -385,6 +385,16 @@ export default function DeviceDetail({ device, onClose, onRefresh }) {
                 <span className="app-pkg">{pkg}</span>
                 <div style={{ display: 'flex', gap: 4 }}>
                   <button
+                    className="btn btn-primary btn-sm"
+                    style={{ padding: '3px 8px', fontSize: 11, background: '#4f46e5', borderColor: '#4f46e5' }}
+                    onClick={() => run('kiosk', () => {
+                      setKioskPkg(pkg);
+                      return window.mdm?.setKiosk(device.serial, pkg);
+                    })}
+                  >
+                    🎯 지정
+                  </button>
+                  <button
                     className="btn btn-danger btn-sm"
                     style={{ padding: '3px 8px', fontSize: 11 }}
                     onClick={() => window.mdm?.forceStopApp(device.serial, pkg)}

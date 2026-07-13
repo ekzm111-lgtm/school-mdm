@@ -1,6 +1,6 @@
 import { useState } from 'react';
 
-export default function DeviceGrid({ devices, onSelect, selected, filter, checkedSerials, onToggleCheck }) {
+export default function DeviceGrid({ devices, onSelect, selected, filter, checkedSerials, onToggleCheck, onSelectAll, onInvertSelect }) {
   const [search, setSearch] = useState('');
   const [sort, setSort]     = useState('state');
   const [selectedCategory, setSelectedCategory] = useState('ALL');
@@ -77,6 +77,19 @@ export default function DeviceGrid({ devices, onSelect, selected, filter, checke
           <option value="alias">네임텍 이름순</option>
         </select>
         <span style={{ fontSize:13, color:'#64748b', fontWeight:500 }}>{filtered.length}대 표시 중</span>
+
+        {/* 전체 선택 / 선택 반전 / 전체 해제 버튼 추가 */}
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginLeft: 'auto' }}>
+          <button className="btn btn-ghost btn-sm" type="button" onClick={() => onSelectAll(filtered.map(d => d.serial))} style={{ border: '1px solid #cbd5e1', fontWeight: 600, padding: '5px 10px', fontSize: 12, height: 32, display: 'flex', alignItems: 'center', background: '#ffffff', color: '#334155' }}>
+            ✅ 전체 선택
+          </button>
+          <button className="btn btn-ghost btn-sm" type="button" onClick={() => onInvertSelect(filtered.map(d => d.serial))} style={{ border: '1px solid #cbd5e1', fontWeight: 600, padding: '5px 10px', fontSize: 12, height: 32, display: 'flex', alignItems: 'center', background: '#ffffff', color: '#334155' }}>
+            🔄 선택 반전
+          </button>
+          <button className="btn btn-ghost btn-sm" type="button" onClick={() => onSelectAll([])} style={{ border: '1px solid #fca5a5', background: '#fee2e2', color: '#dc2626', fontWeight: 600, padding: '5px 10px', fontSize: 12, height: 32, display: 'flex', alignItems: 'center' }}>
+            ❌ 전체 해제
+          </button>
+        </div>
       </div>
 
       {/* 카드 그리드 */}
