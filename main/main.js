@@ -622,11 +622,20 @@ ipcMain.handle('get-device-location', async (_, serial) => {
     const timeout = setTimeout(() => {
       pendingLocationRequests.delete(serial);
       resolve({ ok: false, error: '태블릿 응답 시간 초과 (GPS 비활성화 또는 신호 지연)' });
-    }, 10000);
+    }, 20000);
     
     pendingLocationRequests.set(serial, resolve);
     socket.emit('get-location');
   });
+});
+
+ipcMain.handle('find-device', async (_, serial) => {
+  const socket = tabletSockets.get(serial);
+  if (socket) {
+    socket.emit('find-device');
+    return { ok: true };
+  }
+  return { ok: false, error: '태블릿이 소켓 서버에 오프라인 상태입니다.' };
 });
 
 // 실시간 화면 미러링 개시 (Device Owner 불필요)

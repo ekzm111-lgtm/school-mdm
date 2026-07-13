@@ -2,7 +2,7 @@ import { useState } from 'react';
 
 export default function DeviceGrid({ devices, onSelect, selected, filter, checkedSerials, onToggleCheck, onSelectAll, onInvertSelect }) {
   const [search, setSearch] = useState('');
-  const [sort, setSort]     = useState('state');
+  const [sort, setSort]     = useState('alias');
   const [selectedCategory, setSelectedCategory] = useState('ALL');
 
   // 중복 없이 기기에 지정된 모든 고유 그룹(카테고리) 목록 추출

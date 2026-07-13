@@ -100,15 +100,14 @@ export default function DeviceDetail({ device, onClose, onRefresh }) {
     }
   };
 
-  const handleGetLocation = async () => {
-    setLoading('location');
-    setLocationResult(null);
+  const handleFindDevice = async () => {
+    setLoading('findDevice');
     try {
       let res;
       if (isMdm) {
-        res = await window.mdm.getDeviceLocation(device.serial);
+        res = await window.mdm.findDevice(device.serial);
       } else {
-        const response = await fetch('http://localhost:3010/devices/location', {
+        const response = await fetch('http://localhost:3010/devices/find-device', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ serial: device.serial })
@@ -117,12 +116,12 @@ export default function DeviceDetail({ device, onClose, onRefresh }) {
       }
       
       if (res.ok) {
-        setLocationResult({ lat: res.lat, lng: res.lng });
+        alert("🔊 태블릿 기기 찾기 알림 벨소리 명령을 보냈습니다! (무음 모드 상태여도 8초간 울림)");
       } else {
-        setLocationResult({ error: res.error || '위치 정보를 가져올 수 없습니다.' });
+        alert("❌ 전송 실패: " + (res.error || "태블릿 상태를 확인해 주세요."));
       }
     } catch (err) {
-      setLocationResult({ error: '위치 정보 요청 중 네트워크 오류가 발생했습니다.' });
+      alert("알림 전송 중 오류가 발생했습니다.");
     } finally {
       setLoading('');
     }
@@ -236,47 +235,21 @@ export default function DeviceDetail({ device, onClose, onRefresh }) {
         </div>
       </div>
 
-      {/* 실시간 위치 찾기 */}
+      {/* 기기 찾기 (소리 울림) */}
       <div className="dp-section">
-        <div className="section-title">📍 실시간 위치 찾기</div>
+        <div className="section-title">🔊 태블릿 기기 찾기</div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           <button
-            className="btn btn-ghost btn-sm"
-            disabled={!isOnline || loading === 'location'}
-            onClick={handleGetLocation}
-            style={{ width: '100%', border: '1px solid var(--border)' }}
+            className="btn btn-primary btn-sm"
+            disabled={!isOnline || loading === 'findDevice'}
+            onClick={handleFindDevice}
+            style={{ width: '100%', padding: '8px 0', fontSize: 13, fontWeight: 700, background: '#10b981', borderColor: '#10b981' }}
           >
-            {loading === 'location' ? '🌐 실시간 위치 추적 중...' : '📍 GPS 위치 조회'}
+            {loading === 'findDevice' ? '⚡ 명령 전송 중...' : '🔊 기기 소리 울림 (위치 찾기)'}
           </button>
-          
-          {locationResult && (
-            <div style={{
-              background: 'var(--bg-card2)', padding: 10, borderRadius: 8, border: '1px solid var(--border)',
-              fontSize: 12, display: 'flex', flexDirection: 'column', gap: 6
-            }}>
-              {locationResult.error ? (
-                <div style={{ color: '#dc2626', fontWeight: 600 }}>⚠️ {locationResult.error}</div>
-              ) : (
-                <>
-                  <div style={{ color: 'var(--text)' }}>
-                    • 위도(Lat): <strong style={{ fontFamily: 'var(--mono)' }}>{locationResult.lat}</strong><br/>
-                    • 경도(Lng): <strong style={{ fontFamily: 'var(--mono)' }}>{locationResult.lng}</strong>
-                  </div>
-                  <a
-                    href={`https://www.google.com/maps/search/?api=1&query=${locationResult.lat},${locationResult.lng}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    style={{
-                      display: 'block', textAlign: 'center', background: '#10b981', color: '#ffffff',
-                      padding: '5px 10px', borderRadius: 6, textDecoration: 'none', fontWeight: 700, fontSize: 11.5
-                    }}
-                  >
-                    🗺️ 구글 지도에서 실시간 위치 보기
-                  </a>
-                </>
-              )}
-            </div>
-          )}
+          <p style={{ fontSize: 11, color: 'var(--text-muted)', margin: 0, lineHeight: 1.4 }}>
+            ※ 태블릿이 진동/무음 상태로 되어 있어도 강제로 최대 음량으로 경고음 벨소리가 8초간 크게 울립니다.
+          </p>
         </div>
       </div>
 
