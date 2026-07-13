@@ -15,6 +15,11 @@ export default function FileDistributeModal({ devices, onClose }) {
 
   const onlineDevices = devices.filter(d => d.state === 'online');
 
+  // 최초 마운트 시 1회만 온라인 기기 목록으로 초기 선택 세팅
+  useEffect(() => {
+    setSelectedSerials(devices.filter(d => d.state === 'online').map(d => d.serial));
+  }, []);
+
   useEffect(() => {
     // 전역적인 브라우저 파일 드롭 기본 동작 방지 및 복사 커서 강제화 (🚫 방지)
     const preventDefault = (e) => {
@@ -26,9 +31,6 @@ export default function FileDistributeModal({ devices, onClose }) {
     window.addEventListener('dragenter', preventDefault);
     window.addEventListener('dragover', preventDefault);
     window.addEventListener('drop', preventDefault);
-
-    // 기본적으로 모든 온라인 기기 선택 상태로 초기화
-    setSelectedSerials(onlineDevices.map(d => d.serial));
 
     if (isMdm && window.mdm.onDistributeProgress) {
       window.mdm.onDistributeProgress(({ progress, state }) => {
@@ -46,7 +48,7 @@ export default function FileDistributeModal({ devices, onClose }) {
         window.mdm.removeDistributeProgress();
       }
     };
-  }, [devices]);
+  }, []);
 
   const handleFileChange = (e) => {
     const file = e.target.files[0];

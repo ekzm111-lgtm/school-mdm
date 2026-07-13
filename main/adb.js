@@ -13,6 +13,7 @@ class AdbManager extends EventEmitter {
     this.socketDevices = new Map(); // serial → socketInfo (Device Owner 클라이언트들)
     this.pollingInterval = null;
     this.pollCount = 0; // 폴링 카운트 추가 (배터리 등의 주기적 갱신을 조절하여 CPU 과부하 방지)
+    this.isRunning = false; // 중복 실행 방지 Lock 플래그 추가 (프로세스 폭주 방지)
     this.adbPath = this._resolveAdbPath();
     const { app } = require('electron');
     // 패키징 상태일 때는 실행 파일과 같은 경로(즉, dist나 설치 폴더)에 device_aliases.json을 위치시켜 다른 PC 유실 방지
@@ -100,7 +101,25 @@ class AdbManager extends EventEmitter {
 
   setSocketDevices(socketDevices) {
     this.socketDevices = socketDevices;
-    this.refreshDevices();
+    // 무거운 adb 스캔을 매번 부르지 않고 소켓 커넥션 정보를 메모리에 즉시 병합하여 0.1초 만에 화면에 띄움
+    this._mergeSocketDevices();
+    this.emit('device-update', this.getDevices());
+  }
+
+  _mergeSocketDevices() {
+    if (!this.socketDevices) return;
+    for (const [serial, socketInfo] of this.socketDevices.entries()) {
+      const existing = this.devices.get(serial) || {};
+      const meta = this.deviceAliases.get(serial) || { alias: '', group: '' };
+      this.devices.set(serial, {
+        ...existing,
+        ...socketInfo,
+        serial,
+        alias: meta.alias || existing.alias || '',
+        group: meta.group || existing.group || '',
+        state: socketInfo.state === 'online' ? 'online' : (existing.state || 'offline')
+      });
+    }
   }
 
   // ADB 명령 실행 (Promise 래핑)
@@ -120,6 +139,11 @@ class AdbManager extends EventEmitter {
 
   // 연결된 기기 목록 새로고침
   async refreshDevices() {
+    if (this.isRunning) {
+      console.log('[ADB] refreshDevices is already running. Skipping.');
+      return;
+    }
+    this.isRunning = true;
     try {
       const output = await this._exec('devices -l');
       const lines = output ? output.split('\n').slice(1).filter(l => l.trim()) : [];
@@ -205,6 +229,8 @@ class AdbManager extends EventEmitter {
       this.pollCount++;
     } catch (e) {
       console.error('[ADB] refreshDevices error:', e);
+    } finally {
+      this.isRunning = false;
     }
   }
 

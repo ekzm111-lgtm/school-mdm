@@ -360,7 +360,7 @@ app.whenReady().then(async () => {
   adbManager.on('device-update', (devices) => {
     mainWindow?.webContents.send('device-update', devices);
   });
-  adbManager.startPolling(2000);
+  adbManager.startPolling(5000);
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
