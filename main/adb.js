@@ -125,51 +125,54 @@ class AdbManager extends EventEmitter {
       const lines = output ? output.split('\n').slice(1).filter(l => l.trim()) : [];
       const adbSerials = [];
 
-      // 1. ADB로 감지된 USB/무선 기기 파싱
-      for (const line of lines) {
+      // 1. ADB로 감지된 USB/무선 기기 파싱 (Promise.all 병렬 처리로 15대 이상 병목 해결)
+      const scanPromises = lines.map(async (line) => {
         const parts = line.trim().split(/\s+/);
         const serial = parts[0];
         const state = parts[1];
-        if (!serial || state === 'offline') continue;
+        if (!serial || state === 'offline') return;
 
         adbSerials.push(serial);
 
         const existing = this.devices.get(serial) || {};
 
-        // 모델명 캐싱 (이미 존재하면 불필요한 adb shell 호출 차단)
-        const model = existing.model && existing.model !== '알 수 없음' 
-          ? existing.model 
-          : (await this._getModel(serial) || existing.model || '알 수 없음');
-          
-        // IP 캐싱 (이미 존재하면 불필요한 adb shell 호출 차단)
-        const ip = existing.ip 
-          ? existing.ip 
-          : (await this._getIp(serial) || existing.ip || '');
+        // 모델명 캐싱 비동기 병렬화
+        const modelPromise = (existing.model && existing.model !== '알 수 없음')
+          ? Promise.resolve(existing.model)
+          : this._getModel(serial).then(m => m || existing.model || '알 수 없음');
 
-        // 배터리는 5회에 1번만 폴링하여 리소스 낭비 차단
-        let battery = existing.battery ?? 0;
+        // IP 캐싱 비동기 병렬화
+        const ipPromise = existing.ip
+          ? Promise.resolve(existing.ip)
+          : this._getIp(serial).then(ip => ip || existing.ip || '');
+
+        // 배터리 폴링 분산 비동기 병렬화
+        let batteryPromise;
         if (existing.battery === undefined || existing.battery === 0 || this.pollCount % 5 === 0) {
-          const freshBattery = await this._getBatteryLevel(serial);
-          if (freshBattery !== null) {
-            battery = freshBattery;
-          }
+          batteryPromise = this._getBatteryLevel(serial).then(b => b !== null ? b : (existing.battery ?? 0));
+        } else {
+          batteryPromise = Promise.resolve(existing.battery ?? 0);
         }
+
+        const [model, ip, battery] = await Promise.all([modelPromise, ipPromise, batteryPromise]);
 
         const meta = this.deviceAliases.get(serial) || { alias: '', group: '' };
         this.devices.set(serial, {
           serial,
-          model: model || existing.model || '알 수 없음',
+          model,
           alias: meta.alias,
           group: meta.group,
-          battery: battery ?? existing.battery ?? 0,
-          ip: ip || existing.ip || '',
+          battery,
+          ip,
           state: 'online',
           locked: existing.locked ?? false,
           kioskApp: existing.kioskApp ?? null,
           lastSeen: new Date().toISOString(),
           isDeviceOwner: existing.isDeviceOwner ?? false,
         });
-      }
+      });
+
+      await Promise.all(scanPromises);
 
       // 2. 소켓 연결된 기기 병합 (Device Owner 모드)
       if (this.socketDevices) {

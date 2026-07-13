@@ -26,6 +26,7 @@ export default function Dashboard() {
   const [showGuide, setShowGuide]         = useState(false);
   const [showLocationManager, setShowLocationManager] = useState(false);
   const [loading, setLoading]             = useState('');
+  const [lastCheckedSerial, setLastCheckedSerial] = useState(null);
 
   useEffect(() => {
     if (isMdm) {
@@ -75,10 +76,33 @@ export default function Dashboard() {
     setLoading('');
   };
 
-  const handleToggleCheck = (serial) => {
+  const handleToggleCheck = (serial, shiftKey, visibleSerials) => {
+    if (shiftKey && lastCheckedSerial && visibleSerials) {
+      const lastIdx = visibleSerials.indexOf(lastCheckedSerial);
+      const currIdx = visibleSerials.indexOf(serial);
+      if (lastIdx !== -1 && currIdx !== -1) {
+        const start = Math.min(lastIdx, currIdx);
+        const end = Math.max(lastIdx, currIdx);
+        const rangeSerials = visibleSerials.slice(start, end + 1);
+        const isLastCheckedChecked = checkedSerials.includes(lastCheckedSerial);
+
+        setCheckedSerials(prev => {
+          if (isLastCheckedChecked) {
+            const next = new Set([...prev, ...rangeSerials]);
+            return Array.from(next);
+          } else {
+            return prev.filter(s => !rangeSerials.includes(s));
+          }
+        });
+        setLastCheckedSerial(serial);
+        return;
+      }
+    }
+
     setCheckedSerials(prev => 
       prev.includes(serial) ? prev.filter(s => s !== serial) : [...prev, serial]
     );
+    setLastCheckedSerial(serial);
   };
 
   const handleClearDownloadAllSelected = async () => {

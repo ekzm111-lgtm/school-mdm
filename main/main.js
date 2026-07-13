@@ -1,3 +1,4 @@
+process.env.UV_THREADPOOL_SIZE = 64;
 const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('path');
 const http = require('http');

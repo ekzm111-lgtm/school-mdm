@@ -99,9 +99,15 @@ export default function DeviceGrid({ devices, onSelect, selected, filter, checke
             key={d.serial}
             device={d}
             selected={selected===d.serial}
-            onClick={() => onSelect(d.serial===selected?null:d.serial)}
+            onClick={(e) => {
+              if (e.shiftKey) {
+                onToggleCheck(d.serial, true, filtered.map(x => x.serial));
+              } else {
+                onSelect(d.serial===selected?null:d.serial);
+              }
+            }}
             checked={checkedSerials?.includes(d.serial)}
-            onToggleCheck={onToggleCheck}
+            onToggleCheck={(serial, shiftKey) => onToggleCheck(serial, shiftKey, filtered.map(x => x.serial))}
             delay={i*25}
           />
         ))}
@@ -165,10 +171,11 @@ function DeviceCard({ device:d, selected, onClick, checked, onToggleCheck, delay
           <input 
             type="checkbox"
             checked={!!checked}
-            onChange={(e) => {
+            onClick={(e) => {
               e.stopPropagation();
-              onToggleCheck(d.serial);
+              onToggleCheck(d.serial, e.shiftKey);
             }}
+            onChange={() => {}}
             style={{ 
               width: 15, height: 15, cursor: 'pointer', accentColor: '#4f46e5',
               margin: 0
