@@ -27,12 +27,26 @@ export default function Dashboard() {
   const [showLocationManager, setShowLocationManager] = useState(false);
   const [loading, setLoading]             = useState('');
   const [lastCheckedSerial, setLastCheckedSerial] = useState(null);
+  const [networkMode, setNetworkMode]     = useState('external'); // 'local' | 'external'
+  const [buildStatus, setBuildStatus]     = useState(null); // null | { step, progress, message }
 
   useEffect(() => {
     if (isMdm) {
       window.mdm.getDevices().then(d => { if (d?.length) setDevices(d); });
       window.mdm.onDeviceUpdate(setDevices);
-      return () => window.mdm.removeDeviceUpdate();
+      // 초기 네트워크 모드 로드
+      window.mdm.getNetworkMode?.().then(cfg => { if (cfg?.mode) setNetworkMode(cfg.mode); });
+      // APK 빌드 진행상태 수신
+      window.mdm.onBuildProgress?.((data) => {
+        setBuildStatus(data);
+        if (data.step === 'done' || data.step === 'error') {
+          setTimeout(() => setBuildStatus(null), 5000);
+        }
+      });
+      return () => {
+        window.mdm.removeDeviceUpdate();
+        window.mdm.removeBuildProgress?.();
+      };
     } else {
       // 일반 웹 브라우저 접속 환경: 3010 포트의 HTTP API를 주기적으로 호출(폴링)하여 동기화
       const fetchDevices = async () => {
@@ -67,6 +81,24 @@ export default function Dashboard() {
     for (const d of devices.filter(d => d.state === 'online' && !d.locked))
       await window.mdm.lockDevice(d.serial);
     setLoading('');
+  };
+
+  const handleNetworkModeToggle = async () => {
+    if (!isMdm) return;
+    const newMode = networkMode === 'local' ? 'external' : 'local';
+    const result = await window.mdm.setNetworkMode(newMode);
+    if (result?.ok) setNetworkMode(newMode);
+  };
+
+  const handleBuildAndDeploy = async () => {
+    if (!isMdm) { alert('Electron 앱에서만 사용 가능합니다.'); return; }
+    if (!confirm('APK를 빌드하고 연결된 모든 태블릿에 자동 배포할까요?\n(빌드 시간: 약 30초~1분)')) return;
+    setBuildStatus({ step: 'building', progress: 0, message: '빌드 준비 중...' });
+    const result = await window.mdm.buildAndDeployApk();
+    if (!result?.ok) {
+      setBuildStatus({ step: 'error', progress: 0, message: result?.error || '빌드 실패' });
+      setTimeout(() => setBuildStatus(null), 5000);
+    }
   };
   const handleUnlockAll = async () => {
     if (!isMdm) { alert('⚠️ 실제 태블릿이 연결되어야 동작합니다.'); return; }
@@ -178,6 +210,38 @@ export default function Dashboard() {
               }}>📢 전체 알림</button>
               <button className="btn btn-ghost btn-sm" onClick={() => setShowFileDistribute(true)}>📁 파일 배포</button>
               <button className="btn btn-ghost btn-sm" onClick={() => setShowLocationManager(true)} style={{ color:'#4f46e5', borderColor:'#c7d2fe', background:'#eef2ff' }}>🗂️ 장소 관리</button>
+
+              {/* ── 네트워크 모드 토글 ── */}
+              <button
+                onClick={handleNetworkModeToggle}
+                title={networkMode === 'local' ? '현재: 로컬 WiFi 직접연결 → 클릭하면 외부망으로 전환' : '현재: 외부망(Cloudflare) → 클릭하면 로컬 WiFi로 전환'}
+                style={{
+                  display:'flex', alignItems:'center', gap:5, padding:'5px 12px', borderRadius:8,
+                  border:`1.5px solid ${networkMode === 'local' ? '#16a34a' : '#6366f1'}`,
+                  background: networkMode === 'local' ? '#dcfce7' : '#eef2ff',
+                  color: networkMode === 'local' ? '#15803d' : '#4f46e5',
+                  cursor:'pointer', fontSize:12, fontWeight:700, transition:'all 0.2s'
+                }}
+              >
+                <span style={{ fontSize:14 }}>{networkMode === 'local' ? '📶' : '🌐'}</span>
+                {networkMode === 'local' ? '로컬 WiFi' : '외부망'}
+              </button>
+
+              {/* ── APK 자동 배포 ── */}
+              {buildStatus ? (
+                <div style={{ display:'flex', alignItems:'center', gap:6, padding:'5px 12px', borderRadius:8,
+                  background: buildStatus.step === 'error' ? '#fee2e2' : buildStatus.step === 'done' ? '#dcfce7' : '#fef3c7',
+                  border: `1.5px solid ${buildStatus.step === 'error' ? '#fca5a5' : buildStatus.step === 'done' ? '#86efac' : '#fde68a'}`,
+                  fontSize:12, fontWeight:700, color: buildStatus.step === 'error' ? '#dc2626' : buildStatus.step === 'done' ? '#16a34a' : '#92400e'
+                }}>
+                  {buildStatus.step === 'done' ? '✅' : buildStatus.step === 'error' ? '❌' : '⏳'} {buildStatus.message}
+                </div>
+              ) : (
+                <button className="btn btn-ghost btn-sm"
+                  onClick={handleBuildAndDeploy}
+                  style={{ color:'#7c3aed', borderColor:'#ddd6fe', background:'#f5f3ff' }}
+                >🚀 APK 배포</button>
+              )}
               {checkedSerials.length > 0 && (
                 <div style={{ display: 'flex', gap: 6 }} className="animate-fade">
                   <button className="btn btn-sm" onClick={handleClearDownloadAllSelected} disabled={!!loading} style={{ background: '#f59e0b', color: '#ffffff', borderColor: '#d97706', padding: '6px 12px', fontWeight: 700 }}>

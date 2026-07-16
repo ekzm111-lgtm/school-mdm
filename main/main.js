@@ -10,69 +10,94 @@ const AdbManager = require('./adb');
 let mainWindow;
 let adbManager;
 
-// ─── ngrok 자동 시작 · 워치독 ───────────────────────────
-const NGROK_URL  = 'https://nonepithelial-unbased-reece.ngrok-free.dev';
-const NGROK_PORT = 3010;
-// 다른 PC에서도 ngrok이 구동되도록 본인의 ngrok authtoken을 여기에 입력하세요.
-// 공백으로 둘 경우 시스템에 등록된 글로벌 토큰을 사용합니다.
-const NGROK_AUTHTOKEN = '3Ankmw3lih9mgVp7WXc3llWLQug_4WxJzoG51aDaso6GLUzE'; 
-let ngrokProc    = null;
-let ngrokRestartTimer = null;
+const fs = require('fs');
+let logFile;
+
+function writeLog(message) {
+  try {
+    if (!logFile) {
+      logFile = path.join(app.getPath('userData'), 'mdm_debug.log');
+      console.log('====== DEBUG LOG FILE PATH ======');
+      console.log(logFile);
+      console.log('=================================');
+    }
+    const timeStr = new Date().toISOString();
+    const logMsg = `[${timeStr}] ${message}\n`;
+    console.log(logMsg.trim());
+    fs.appendFile(logFile, logMsg, 'utf8', (err) => {
+      if (err) console.error('[Log] Failed to write debug log:', err);
+    });
+  } catch (e) {
+    console.error('[Log] Logging error:', e);
+  }
+}
+
+// ─── Cloudflare Tunnel 자동 시작 · 워치독 ────────────────
+// ngrok 대비 장점: 대역폭 제한 없음, 완전 무료, 계정 불필요
+const CF_PORT = 3010;
+let cfProc = null;
+let cfRestartTimer = null;
+let cfTunnelUrl = null; // 동적으로 파싱된 공개 URL
 
 /**
- * ngrok 바이너리 경로 결정:
- *   1순위 — EXE 패키징 시 resources/ngrok.exe (번들, 어떤 PC에도 설치 불필요)
- *   2순위 — 개발 환경: 프로젝트 루트 resources/ngrok.exe
- *   3순위 — 시스템 PATH의 ngrok (fallback)
+ * cloudflared 바이너리 경로 결정:
+ *   1순위 — EXE 패키징 시 resources/cloudflared.exe
+ *   2순위 — 개발 환경: 프로젝트 루트 resources/cloudflared.exe
+ *   3순위 — 시스템 PATH의 cloudflared (fallback)
  */
-function resolveNgrokBin() {
-  const fs = require('fs');
-  // 패키징된 Portable EXE 실행 시
+function resolveCfBin() {
   if (app.isPackaged) {
-    const bundled = path.join(process.resourcesPath, 'resources', 'ngrok.exe');
+    const bundled = path.join(process.resourcesPath, 'resources', 'cloudflared.exe');
     if (fs.existsSync(bundled)) return bundled;
   }
-  // 개발 환경 (npm run dev)
-  const devPath = path.join(__dirname, '..', 'resources', 'ngrok.exe');
+  const devPath = path.join(__dirname, '..', 'resources', 'cloudflared.exe');
   if (fs.existsSync(devPath)) return devPath;
-  // 최후 fallback: 시스템에 ngrok 설치돼 있으면
-  return process.platform === 'win32' ? 'ngrok.exe' : 'ngrok';
+  return process.platform === 'win32' ? 'cloudflared.exe' : 'cloudflared';
 }
 
 function startNgrok() {
-  if (ngrokProc) return;
-  const ngrokBin = resolveNgrokBin();
-  console.log('[ngrok] 터널 시작... 바이너리:', ngrokBin);
+  if (cfProc) return;
+  const cfBin = resolveCfBin();
+  console.log('[CF] Cloudflare Tunnel 시작... 바이너리:', cfBin);
 
-  const args = [
-    'http', String(NGROK_PORT),
-    '--url=' + NGROK_URL,
-    '--log=stdout'
-  ];
+  cfTunnelUrl = null;
 
-  if (NGROK_AUTHTOKEN) {
-    args.push('--authtoken=' + NGROK_AUTHTOKEN);
-  }
+  cfProc = spawn(cfBin, [
+    'tunnel', '--url', `http://localhost:${CF_PORT}`, '--no-autoupdate'
+  ], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
 
-  ngrokProc = spawn(ngrokBin, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+  // stdout/stderr 모두 URL 정보가 담길 수 있음
+  const onData = (d) => {
+    const text = d.toString();
+    console.log('[CF]', text.trim());
+    // trycloudflare.com URL 파싱
+    const match = text.match(/https:\/\/[a-z0-9\-]+\.trycloudflare\.com/);
+    if (match && !cfTunnelUrl) {
+      cfTunnelUrl = match[0];
+      console.log('[CF] ✅ 터널 URL 감지:', cfTunnelUrl);
+      // 현재 연결된 모든 소켓 기기에게 새 URL 브로드캐스트
+      io.emit('tunnel-url-changed', { url: cfTunnelUrl });
+    }
+  };
 
-  ngrokProc.stdout.on('data', (d) => console.log('[ngrok]', d.toString().trim()));
-  ngrokProc.stderr.on('data', (d) => console.error('[ngrok ERR]', d.toString().trim()));
+  cfProc.stdout.on('data', onData);
+  cfProc.stderr.on('data', onData);
 
-  ngrokProc.on('exit', (code) => {
-    console.log('[ngrok] 프로세스 종료 (code:', code, ') — 5초 후 자동 재시작');
-    ngrokProc = null;
+  cfProc.on('exit', (code) => {
+    console.log('[CF] 프로세스 종료 (code:', code, ') — 5초 후 자동 재시작');
+    cfProc = null;
+    cfTunnelUrl = null;
     if (!app.isQuitting) {
-      ngrokRestartTimer = setTimeout(startNgrok, 5000);
+      cfRestartTimer = setTimeout(startNgrok, 5000);
     }
   });
 }
 
 function stopNgrok() {
-  clearTimeout(ngrokRestartTimer);
-  if (ngrokProc) {
-    ngrokProc.kill();
-    ngrokProc = null;
+  clearTimeout(cfRestartTimer);
+  if (cfProc) {
+    cfProc.kill();
+    cfProc = null;
   }
 }
 
@@ -91,16 +116,41 @@ const pendingClearRequests = new Map(); // serial -> resolve
 const pendingLocationRequests = new Map(); // serial -> resolve
 const pendingAppListRequests = new Map(); // serial -> resolve
 const pendingUninstallRequests = new Map(); // serial -> resolve
+const distributionQueue = new Map(); // serial -> { fileUrl, fileName, createShortcut }
+
+// ─── 네트워크 모드 관리 ─────────────────────────────
+// 'local'  : 같은 WiFi망 → 태블릿이 로컬 IP로 직접 연결 (빠름, 방화벽 불필요)
+// 'external': 외부망/유선망 → Cloudflare Tunnel 경유 (학교 외부 or 유선 PC)
+let networkMode = 'external'; // 기본값: 외부망 (Cloudflare)
+
+function getLocalIp() {
+  const ifaces = require('os').networkInterfaces();
+  for (const name in ifaces) {
+    for (const iface of ifaces[name]) {
+      if (iface.family === 'IPv4' && !iface.internal) return iface.address;
+    }
+  }
+  return '127.0.0.1';
+}
+
+// 현재 모드에 맞는 서버 URL 반환
+function getServerUrl() {
+  if (networkMode === 'local') return `http://${getLocalIp()}:3010`;
+  return cfTunnelUrl || `http://${getLocalIp()}:3010`; // 터널 없으면 로컬 폴백
+}
 
 io.on('connection', (socket) => {
-  console.log('[Socket] Client connected:', socket.id);
+  writeLog(`[Socket] Client connected. SocketID: ${socket.id}, IP: ${socket.handshake.address}`);
 
   // 태블릿 클라이언트 등록
   socket.on('register', (deviceInfo) => {
     const { serial } = deviceInfo;
-    if (!serial) return;
+    if (!serial) {
+      writeLog(`[Socket] Register rejected - missing serial. SocketID: ${socket.id}`);
+      return;
+    }
     
-    console.log('[Socket] Device registered:', serial, deviceInfo.model);
+    writeLog(`[Socket] Device registered. Serial: ${serial}, Model: ${deviceInfo.model || 'Unknown'}, SocketID: ${socket.id}`);
     tabletSockets.set(serial, socket);
     
     // 기기 정보 갱신 및 상태 강제 주입
@@ -113,8 +163,17 @@ io.on('connection', (socket) => {
 
     // ADB 매니저에 소켓으로 등록된 기기 정보 합쳐서 넘김
     adbManager?.setSocketDevices(socketDevices);
-    // 등록 즉시 UI 갱신
-    mainWindow?.webContents.send('device-update', adbManager?.getDevices() ?? []);
+
+    // 등록 즉시 현재 네트워크 모드 & 서버 URL 전달
+    socket.emit('server-config', { mode: networkMode, url: getServerUrl(), localUrl: `http://${getLocalIp()}:3010` });
+
+    // ⭐ 추가: 이 기기가 대기 큐에 있으면 온라인 되자마자 즉시 전송
+    const queued = distributionQueue.get(serial);
+    if (queued) {
+      socket.emit('file-distribute', queued);
+      distributionQueue.delete(serial);
+      console.log('[Queue] 온라인 감지, 즉시 전송:', serial);
+    }
   });
 
   // 태블릿이 주기적으로 보내는 배터리/IP 하트비트
@@ -132,8 +191,6 @@ io.on('connection', (socket) => {
     };
     socketDevices.set(serial, updated);
     adbManager?.setSocketDevices(socketDevices);
-    // UI 실시간 반영
-    mainWindow?.webContents.send('device-update', adbManager?.getDevices() ?? []);
   });
 
   // 실시간 미러링 화면 및 상태 릴레이
@@ -148,9 +205,10 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', () => {
-    console.log('[Socket] Client disconnected:', socket.id);
+    let serialFound = 'Unknown';
     for (const [serial, s] of tabletSockets.entries()) {
       if (s.id === socket.id) {
+        serialFound = serial;
         tabletSockets.delete(serial);
         const info = socketDevices.get(serial);
         if (info) {
@@ -159,6 +217,7 @@ io.on('connection', (socket) => {
         break;
       }
     }
+    writeLog(`[Socket] Client disconnected. SocketID: ${socket.id}, Serial: ${serialFound}`);
     adbManager?.setSocketDevices(socketDevices);
   });
 
@@ -220,7 +279,6 @@ io.on('connection', (socket) => {
 });
 
 // APK 다운로드 API 추가 (태블릿 무선 연결용)
-const fs = require('fs');
 const sharedDir = path.join(app.getPath('userData'), 'shared_files');
 if (!fs.existsSync(sharedDir)) {
   fs.mkdirSync(sharedDir, { recursive: true });
@@ -231,6 +289,21 @@ expressApp.use('/shared', express.static(sharedDir));
 // 일반 브라우저 관리자를 위한 HTTP 기기 목록 조회 API 추가
 expressApp.get('/devices', (req, res) => {
   res.json(adbManager?.getDevices() ?? []);
+});
+
+// 태블릿이 현재 Cloudflare Tunnel URL을 조회하는 API
+expressApp.get('/tunnel-url', (req, res) => {
+  res.json({ url: cfTunnelUrl || null });
+});
+
+// 태블릿 최초 접속 시 서버 연결 설정 조회 (로컬 IP 경유)
+expressApp.get('/server-config', (req, res) => {
+  res.json({
+    mode: networkMode,
+    url: getServerUrl(),
+    localUrl: `http://${getLocalIp()}:3010`,
+    externalUrl: cfTunnelUrl || null
+  });
 });
 
 // 일반 브라우저 관리자를 위한 기기 네임텍 별명 변경 API 추가
@@ -353,11 +426,13 @@ app.whenReady().then(async () => {
   adbManager = new AdbManager();
   await adbManager.init();
 
-  // ngrok 자동 시작 (프로그램 켜질 때마다 자동 터널 연결)
+  // Cloudflare Tunnel 자동 시작 (프로그램 켜질 때마다 자동 터널 연결)
   startNgrok();
 
   // ADB + Socket 기기 연동 이벤트 전달
   adbManager.on('device-update', (devices) => {
+    const onlineCount = devices.filter(d => d.state === 'online').length;
+    writeLog(`[Update] UI Update pushed. Total devices: ${devices.length}, Online: ${onlineCount}`);
     mainWindow?.webContents.send('device-update', devices);
   });
   adbManager.startPolling(5000);
@@ -568,23 +643,30 @@ ipcMain.handle('distribute-file', async (event, filePath, targetSerials, options
     }
     
     const serverHost = options?.serverIp || localIp;
-    const fileUrl = serverHost.includes('ngrok-free') || serverHost.includes('loca.lt')
-      ? `https://${serverHost}/shared/${encodeURIComponent(fileName)}`
-      : `http://${serverHost}:3010/shared/${encodeURIComponent(fileName)}`;
+    // Cloudflare Tunnel이 활성화된 경우 우선 사용 (대역폭 무제한)
+    const fileUrl = cfTunnelUrl
+      ? `${cfTunnelUrl}/shared/${encodeURIComponent(fileName)}`
+      : serverHost.includes('trycloudflare') || serverHost.includes('ngrok-free') || serverHost.includes('loca.lt')
+        ? `https://${serverHost}/shared/${encodeURIComponent(fileName)}`
+        : `http://${serverHost}:3010/shared/${encodeURIComponent(fileName)}`;
       
     console.log('[Control] Distributing file:', fileUrl, 'to:', targetSerials, 'options:', options);
     
-    // 3. 대상 시리얼 번호 목록에 해당하는 소켓에 이벤트 발송
+    // 3. 대상 시리얼 번호 목록에 해당하는 소켓에 이벤트 발송 (오프라인인 기기는 큐에 저장)
     let sentCount = 0;
     for (const serial of targetSerials) {
       const socket = tabletSockets.get(serial);
+      const payload = { fileUrl, fileName, createShortcut: options?.createShortcut };
       if (socket) {
-        socket.emit('file-distribute', { fileUrl, fileName, createShortcut: options?.createShortcut });
+        socket.emit('file-distribute', payload);
         sentCount++;
+      } else {
+        // ⭐ 오프라인이면 큐에 저장, 온라인 되는 즉시 위 register 핸들러가 자동 전송
+        distributionQueue.set(serial, payload);
       }
     }
     
-    return { ok: true, sentCount, fileUrl };
+    return { ok: true, sentCount, queuedCount: distributionQueue.size, fileUrl };
   } catch (err) {
     console.error('File distribution error:', err);
     return { ok: false, error: err.message };
@@ -661,18 +743,90 @@ ipcMain.handle('stop-mirror', async (_, serial) => {
 
 // 서버 IP 조회
 ipcMain.handle('get-server-ip', async () => {
-  const ip = require('os').networkInterfaces();
-  let localIp = '127.0.0.1';
-  for (const devName in ip) {
-    const iface = ip[devName];
-    for (let i = 0; i < iface.length; i++) {
-      const alias = iface[i];
-      if (alias.family === 'IPv4' && alias.address !== '127.0.0.1' && !alias.internal) {
-        localIp = alias.address;
-        break;
-      }
-    }
+  return getLocalIp();
+});
+
+// ─── 네트워크 모드 전환 ─────────────────────────────────
+// 'local': 같은 WiFi → 로컬 IP 직접 연결
+// 'external': 외부망 → Cloudflare Tunnel
+ipcMain.handle('set-network-mode', async (_, mode) => {
+  networkMode = mode === 'local' ? 'local' : 'external';
+  const serverUrl = getServerUrl();
+  console.log(`[Mode] 네트워크 모드 변경: ${networkMode}, URL: ${serverUrl}`);
+  // 현재 연결된 모든 태블릿에 새 설정 브로드캐스트
+  io.emit('server-config', {
+    mode: networkMode,
+    url: serverUrl,
+    localUrl: `http://${getLocalIp()}:3010`,
+    externalUrl: cfTunnelUrl || null
+  });
+  return { ok: true, mode: networkMode, url: serverUrl };
+});
+
+ipcMain.handle('get-network-mode', async () => {
+  return { mode: networkMode, url: getServerUrl(), localUrl: `http://${getLocalIp()}:3010`, externalUrl: cfTunnelUrl || null };
+});
+
+// ─── APK 자동 빌드 & 전체 태블릿 배포 ─────────────────────
+ipcMain.handle('build-and-deploy-apk', async () => {
+  const androidDir = path.join(__dirname, '..', '..', 'School-MDM-Android');
+  const javaHome = 'C:\\Users\\User\\AppData\\Local\\Android\\jdk\\jdk-17.0.8.1+1';
+  const apkSrc  = path.join(androidDir, 'app', 'build', 'outputs', 'apk', 'debug', 'app-debug.apk');
+  const apkDest = path.join(__dirname, '..', 'resources', 'apk', 'app-debug.apk');
+
+  if (!fs.existsSync(androidDir)) {
+    return { ok: false, error: 'School-MDM-Android 폴더를 찾을 수 없습니다.' };
   }
-  return localIp;
+
+  mainWindow?.webContents.send('build-progress', { step: 'building', progress: 0, message: '빌드 시작...' });
+
+  return new Promise((resolve) => {
+    const env = { ...process.env, JAVA_HOME: javaHome };
+    const gradlew = process.platform === 'win32' ? 'gradlew.bat' : './gradlew';
+    const buildProc = spawn(gradlew, ['assembleDebug', '--quiet'], {
+      cwd: androidDir, env, windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+
+    buildProc.stdout.on('data', (d) => {
+      const msg = d.toString().trim();
+      if (msg) mainWindow?.webContents.send('build-progress', { step: 'building', progress: 50, message: msg });
+    });
+    buildProc.stderr.on('data', (d) => {
+      const msg = d.toString().trim();
+      if (msg) console.log('[Build]', msg);
+    });
+
+    buildProc.on('exit', (code) => {
+      if (code !== 0) {
+        mainWindow?.webContents.send('build-progress', { step: 'error', progress: 0, message: `빌드 실패 (code: ${code})` });
+        return resolve({ ok: false, error: `빌드 실패 (exit code: ${code})` });
+      }
+
+      // APK를 resources로 복사
+      try {
+        fs.copyFileSync(apkSrc, apkDest);
+      } catch (e) {
+        return resolve({ ok: false, error: `APK 복사 실패: ${e.message}` });
+      }
+
+      mainWindow?.webContents.send('build-progress', { step: 'deploying', progress: 80, message: '태블릿에 배포 중...' });
+
+      // 서버 URL 기반으로 APK 다운로드 URL 생성
+      const serverUrl = getServerUrl();
+      const apkUrl = `${serverUrl}/apk`;
+
+      // 현재 연결된 모든 태블릿에 업데이트 알림
+      let sentCount = 0;
+      for (const [serial, socket] of tabletSockets.entries()) {
+        socket.emit('apk-update', { apkUrl, version: new Date().toISOString() });
+        sentCount++;
+      }
+
+      mainWindow?.webContents.send('build-progress', { step: 'done', progress: 100, message: `완료! ${sentCount}대에 배포됨` });
+      console.log(`[Build] APK 배포 완료. ${sentCount}대 전송됨. URL: ${apkUrl}`);
+      resolve({ ok: true, sentCount, apkUrl });
+    });
+  });
 });
 

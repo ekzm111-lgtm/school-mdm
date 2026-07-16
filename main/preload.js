@@ -56,4 +56,13 @@ contextBridge.exposeInMainWorld('mdm', {
 
   // 서버 IP 조회
   getServerIp: () => ipcRenderer.invoke('get-server-ip'),
+
+  // 네트워크 모드 (local: 같은 WiFi 직접 / external: Cloudflare 터널)
+  setNetworkMode: (mode) => ipcRenderer.invoke('set-network-mode', mode),
+  getNetworkMode: () => ipcRenderer.invoke('get-network-mode'),
+
+  // APK 자동 빌드 & 전체 배포
+  buildAndDeployApk: () => ipcRenderer.invoke('build-and-deploy-apk'),
+  onBuildProgress: (cb) => ipcRenderer.on('build-progress', (_, data) => cb(data)),
+  removeBuildProgress: () => ipcRenderer.removeAllListeners('build-progress'),
 });

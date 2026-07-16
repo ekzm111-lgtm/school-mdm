@@ -22,6 +22,11 @@ class AdbManager extends EventEmitter {
       : path.join(app.getPath('userData'), 'device_aliases.json');
     this.deviceAliases = new Map();
     this._loadAliases();
+    this.activeExecCount = 0;
+    this.execQueue = [];
+    this.maxConcurrentExec = 3; // 동시 실행할 최대 adb 명령 수 제한
+    this.mergeTimer = null;
+    this.isBackgroundLoading = false;
   }
 
   _loadAliases() {
@@ -101,9 +106,15 @@ class AdbManager extends EventEmitter {
 
   setSocketDevices(socketDevices) {
     this.socketDevices = socketDevices;
-    // 무거운 adb 스캔을 매번 부르지 않고 소켓 커넥션 정보를 메모리에 즉시 병합하여 0.1초 만에 화면에 띄움
-    this._mergeSocketDevices();
-    this.emit('device-update', this.getDevices());
+    
+    // 디바운싱: 여러 기기의 갱신 요청을 200ms 단위로 모아 한 번에 처리
+    if (this.mergeTimer) return;
+    
+    this.mergeTimer = setTimeout(() => {
+      this.mergeTimer = null;
+      this._mergeSocketDevices();
+      this.emit('device-update', this.getDevices());
+    }, 200);
   }
 
   _mergeSocketDevices() {
@@ -122,8 +133,32 @@ class AdbManager extends EventEmitter {
     }
   }
 
-  // ADB 명령 실행 (Promise 래핑)
+  // ADB 명령 실행 (Promise 래핑 및 동시 실행 제한 적용)
   _exec(args) {
+    return new Promise((resolve, reject) => {
+      const task = () => {
+        this.activeExecCount++;
+        exec(`"${this.adbPath}" ${args}`, { timeout: 60000 }, (err, stdout, stderr) => {
+          this.activeExecCount--;
+          this._processQueue(); // 큐에서 다음 작업 진행
+          
+          if (err) {
+            const error = new Error(err.message);
+            error.stderr = stderr;
+            error.stdout = stdout;
+            return reject(error);
+          }
+          resolve(stdout.trim());
+        });
+      };
+
+      this.execQueue.push(task);
+      this._processQueue();
+    });
+  }
+
+  // ADB 명령 즉시 실행 (큐 우회)
+  _execDirect(args) {
     return new Promise((resolve, reject) => {
       exec(`"${this.adbPath}" ${args}`, { timeout: 60000 }, (err, stdout, stderr) => {
         if (err) {
@@ -137,6 +172,14 @@ class AdbManager extends EventEmitter {
     });
   }
 
+  _processQueue() {
+    if (this.activeExecCount >= this.maxConcurrentExec) return;
+    if (this.execQueue.length === 0) return;
+
+    const nextTask = this.execQueue.shift();
+    nextTask();
+  }
+
   // 연결된 기기 목록 새로고침
   async refreshDevices() {
     if (this.isRunning) {
@@ -145,42 +188,54 @@ class AdbManager extends EventEmitter {
     }
     this.isRunning = true;
     try {
-      const output = await this._exec('devices -l');
+      // 큐 대기열에 막히지 않도록 devices -l 명령어는 즉시 다이렉트 실행
+      const output = await this._execDirect('devices -l');
+      console.log('[ADB] devices -l raw output:', JSON.stringify(output));
       const lines = output ? output.split('\n').slice(1).filter(l => l.trim()) : [];
+      console.log('[ADB] parsed lines:', lines);
       const adbSerials = [];
+      const pendingInfoSerials = []; // 백그라운드 상세 정보(IP, 모델, 배터리) 조회 대상
 
-      // 1. ADB로 감지된 USB/무선 기기 파싱 (Promise.all 병렬 처리로 15대 이상 병목 해결)
-      const scanPromises = lines.map(async (line) => {
+      // 어떠한 ADB shell 실행도 대기하지 않고, devices -l 분석만으로 기기를 메모리에 즉각 등록
+      for (const line of lines) {
         const parts = line.trim().split(/\s+/);
         const serial = parts[0];
         const state = parts[1];
-        if (!serial || state === 'offline') return;
+        console.log(`[ADB] line: "${line}" => serial=${serial}, state=${state}`);
+        if (!serial || state === 'offline' || state === 'unauthorized') {
+          console.log(`[ADB] Skipping device serial=${serial}, state=${state}`);
+          continue;
+        }
 
         adbSerials.push(serial);
 
         const existing = this.devices.get(serial) || {};
 
-        // 모델명 캐싱 비동기 병렬화
-        const modelPromise = (existing.model && existing.model !== '알 수 없음')
-          ? Promise.resolve(existing.model)
-          : this._getModel(serial).then(m => m || existing.model || '알 수 없음');
-
-        // IP 캐싱 비동기 병렬화
-        const ipPromise = existing.ip
-          ? Promise.resolve(existing.ip)
-          : this._getIp(serial).then(ip => ip || existing.ip || '');
-
-        // 배터리 폴링 분산 비동기 병렬화
-        let batteryPromise;
-        if (existing.battery === undefined || existing.battery === 0 || this.pollCount % 5 === 0) {
-          batteryPromise = this._getBatteryLevel(serial).then(b => b !== null ? b : (existing.battery ?? 0));
-        } else {
-          batteryPromise = Promise.resolve(existing.battery ?? 0);
+        // 1-1) devices -l 출력에서 model 파싱
+        let model = existing.model;
+        if (model === undefined) {
+          const modelPart = parts.find(p => p.startsWith('model:'));
+          if (modelPart) {
+            model = modelPart.split(':')[1]?.replace(/_/g, '-') || '알 수 없음';
+          } else {
+            model = '조회 중...';
+          }
         }
 
-        const [model, ip, battery] = await Promise.all([modelPromise, ipPromise, batteryPromise]);
+        // 1-2) 무선 ADB의 경우 시리얼에서 IP 즉시 추출
+        let ip = existing.ip;
+        if (ip === undefined) {
+          if (serial.includes('.') && serial.includes(':')) {
+            ip = serial.split(':')[0];
+          } else {
+            ip = '조회 중...';
+          }
+        }
 
+        const battery = existing.battery ?? 0;
         const meta = this.deviceAliases.get(serial) || { alias: '', group: '' };
+
+        // 즉각 메모리 저장 (비블로킹)
         this.devices.set(serial, {
           serial,
           model,
@@ -194,9 +249,24 @@ class AdbManager extends EventEmitter {
           lastSeen: new Date().toISOString(),
           isDeviceOwner: existing.isDeviceOwner ?? false,
         });
-      });
 
-      await Promise.all(scanPromises);
+        // 상세 정보(IP, 모델, 배터리) 쿼리가 필요한지 수집
+        const socketInfo = this.socketDevices?.get(serial);
+        const isSocketOnline = socketInfo && socketInfo.state === 'online';
+
+        const needIp = (ip === '조회 중...');
+        const needModel = (model === '조회 중...');
+        const needBattery = !isSocketOnline && (existing.battery === undefined || existing.battery === 0 || this.pollCount % 12 === 0);
+
+        if (needIp || needModel || needBattery) {
+          pendingInfoSerials.push({
+            serial,
+            needIp,
+            needModel,
+            needBattery
+          });
+        }
+      }
 
       // 2. 소켓 연결된 기기 병합 (Device Owner 모드)
       if (this.socketDevices) {
@@ -225,8 +295,63 @@ class AdbManager extends EventEmitter {
         }
       }
 
+      // 기기 목록이 동기적으로 구성되었으므로 지연 없이 즉각 UI에 알림
       this.emit('device-update', this.getDevices());
       this.pollCount++;
+
+      // 4. 상세 정보 백그라운드 지연 로딩 (비동기 순차 실행 + 0.5초 간격 딜레이 분산 + 중첩 실행 방지 락)
+      if (pendingInfoSerials.length > 0 && !this.isBackgroundLoading) {
+        this.isBackgroundLoading = true;
+        (async () => {
+          try {
+            for (const task of pendingInfoSerials) {
+              const { serial, needIp, needModel, needBattery } = task;
+
+              // 기기당 0.5초 대기 후 순차 쿼리하여 시스템 부하 방지 및 UI 렌더링 무중단 유지
+              await new Promise(resolve => setTimeout(resolve, 500));
+
+              const info = this.devices.get(serial);
+              if (!info || info.state !== 'online') continue;
+
+              let updated = false;
+
+              // IP 조회
+              if (needIp) {
+                const ipVal = await this._getIp(serial);
+                info.ip = ipVal || 'N/A';
+                updated = true;
+              }
+
+              // 모델 조회
+              if (needModel) {
+                const modelVal = await this._getModel(serial);
+                info.model = modelVal || '알 수 없음';
+                updated = true;
+              }
+
+              // 배터리 조회
+              if (needBattery) {
+                const batteryVal = await this._getBatteryLevel(serial);
+                if (batteryVal !== null) {
+                  info.battery = batteryVal;
+                  updated = true;
+                }
+              }
+
+              // 개별 기기 정보 갱신 시마다 즉시 화면에 업데이트 반영
+              if (updated) {
+                this.devices.set(serial, info);
+                this.emit('device-update', this.getDevices());
+              }
+            }
+          } catch (err) {
+            console.error('[ADB] Background loading error:', err);
+          } finally {
+            this.isBackgroundLoading = false;
+          }
+        })();
+      }
+
     } catch (e) {
       console.error('[ADB] refreshDevices error:', e);
     } finally {
@@ -242,7 +367,7 @@ class AdbManager extends EventEmitter {
 
   async _getBatteryLevel(serial) {
     try {
-      const out = await this._exec(`-s ${serial} shell dumpsys battery | grep level`);
+      const out = await this._exec(`-s ${serial} shell dumpsys battery`);
       const match = out.match(/level:\s*(\d+)/);
       return match ? parseInt(match[1]) : null;
     } catch { return null; }
