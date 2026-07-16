@@ -54,12 +54,12 @@ contextBridge.exposeInMainWorld('mdm', {
   // 다운로드 폴더 전체 비우기
   clearDownloadFolder: (serial) => ipcRenderer.invoke('clear-download-folder', serial),
 
-  // 서버 IP 조회
-  getServerIp: () => ipcRenderer.invoke('get-server-ip'),
-
   // 네트워크 모드 (local: 같은 WiFi 직접 / external: Cloudflare 터널)
-  setNetworkMode: (mode) => ipcRenderer.invoke('set-network-mode', mode),
-  getNetworkMode: () => ipcRenderer.invoke('get-network-mode'),
+    setNetworkMode: (mode) => ipcRenderer.invoke('set-network-mode', mode),
+    getNetworkMode: () => ipcRenderer.invoke('get-network-mode'),
+    getServerConfig: () => ipcRenderer.invoke('get-server-config'),
+
+    // APK 자동 빌드 & 전체 배포
 
   // APK 자동 빌드 & 전체 배포
   buildAndDeployApk: () => ipcRenderer.invoke('build-and-deploy-apk'),

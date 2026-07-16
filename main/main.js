@@ -741,9 +741,9 @@ ipcMain.handle('stop-mirror', async (_, serial) => {
   return { ok: false, error: '태블릿이 소켓 서버에 오프라인 상태입니다.' };
 });
 
-// 서버 IP 조회
-ipcMain.handle('get-server-ip', async () => {
-  return getLocalIp();
+// 서버 설정 조회 (모드에 따른 URL 포함)
+ipcMain.handle('get-server-config', async () => {
+  return { mode: networkMode, url: getServerUrl(), localUrl: `http://${getLocalIp()}:3010`, externalUrl: cfTunnelUrl || null };
 });
 
 // ─── 네트워크 모드 전환 ─────────────────────────────────

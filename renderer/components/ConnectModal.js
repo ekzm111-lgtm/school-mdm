@@ -7,20 +7,40 @@ export default function ConnectModal({ onClose }) {
   const [port, setPort] = useState('5555');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
-  const [serverIp, setServerIp] = useState('nonepithelial-unbased-reece.ngrok-free.dev');
+  const [serverConfig, setServerConfig] = useState(null);
+  const [configLoading, setConfigLoading] = useState(true);
 
   useEffect(() => {
-    if (isMdm) {
-      // 학교 망분리 환경에서는 로컬 IP(10.x.x.x) 대신 고정 ngrok 도메인을 최우선 연동 주소로 사용합니다.
-      setServerIp("nonepithelial-unbased-reece.ngrok-free.dev");
-    } else {
-      // 일반 브라우저로 접속한 경우, 현재 접속한 주소의 IP/도메인을 기본값으로 사용
-      const hostname = window.location.hostname;
-      if (hostname && hostname !== 'localhost' && hostname !== '127.0.0.1') {
-        setServerIp(hostname);
+    let mounted = true;
+    const loadConfig = async () => {
+      if (isMdm) {
+        try {
+          const cfg = await window.mdm.getServerConfig();
+          if (mounted && cfg) {
+            setServerConfig(cfg);
+          }
+        } catch (e) {
+          console.error('Failed to load server config:', e);
+        } finally {
+          if (mounted) setConfigLoading(false);
+        }
+      } else {
+        // 일반 브라우저: 현재 접속한 주소 사용
+        const hostname = window.location.hostname;
+        if (hostname && hostname !== 'localhost' && hostname !== '127.0.0.1') {
+          if (mounted) setServerConfig({ url: `http://${hostname}:3010`, mode: 'local' });
+        }
+        if (mounted) setConfigLoading(false);
       }
-    }
+    };
+    loadConfig();
+    return () => { mounted = false; };
   }, []);
+
+  const getServerUrl = () => {
+    if (serverConfig) return serverConfig.url;
+    return '';
+  };
 
   const handleConnect = async () => {
     if (!ip) return;
@@ -36,6 +56,46 @@ export default function ConnectModal({ onClose }) {
     setLoading(false);
   };
 
+  if (configLoading) {
+    return (
+      <div className="modal-overlay" onClick={onClose}>
+        <div className="modal glass animate-fade" onClick={e => e.stopPropagation()}>
+          <div className="modal-header">
+            <h2>🔗 WiFi ADB 연결</h2>
+            <button className="close-btn" onClick={onClose}>✕</button>
+          </div>
+          <div className="modal-body" style={{ maxHeight: '75vh', overflowY: 'auto', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '40px', textAlign: 'center' }}>
+            <div style={{ width: 160, height: 160, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#94a3b8', fontSize: 12, background: '#f8fafc', borderRadius: 12, border: '1px dashed #cbd5e1' }}>
+              서버 설정 로드 중...
+            </div>
+            <p style={{ fontSize: 12.5, color: '#64748b', marginTop: 12 }}>네트워크 모드 확인 중...</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!serverConfig) {
+    return (
+      <div className="modal-overlay" onClick={onClose}>
+        <div className="modal glass animate-fade" onClick={e => e.stopPropagation()}>
+          <div className="modal-header">
+            <h2>🔗 WiFi ADB 연결</h2>
+            <button className="close-btn" onClick={onClose}>✕</button>
+          </div>
+          <div className="modal-body" style={{ maxHeight: '75vh', overflowY: 'auto', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '40px', textAlign: 'center' }}>
+            <div style={{ width: 160, height: 160, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#ef4444', fontSize: 12, background: '#fef2f2', borderRadius: 12, border: '1px solid #fecaca' }}>
+              서버 정보를 가져올 수 없습니다.
+            </div>
+            <p style={{ fontSize: 12.5, color: '#64748b', marginTop: 12 }}>
+              Electron 앱에서 실행 중인지 확인하세요.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal glass animate-fade" onClick={e => e.stopPropagation()}>
@@ -46,7 +106,7 @@ export default function ConnectModal({ onClose }) {
 
         <div className="modal-body" style={{ maxHeight: '75vh', overflowY: 'auto' }}>
           
-          {/* QR 코드 연동 섹션 추가 */}
+          {/* QR 코드 연동 섹션 */}
           <div style={{
             display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10,
             padding: '16px', background: '#f8fafc', borderRadius: 12, border: '1px dashed #cbd5e1',
@@ -61,27 +121,33 @@ export default function ConnectModal({ onClose }) {
               boxShadow: '0 2px 8px rgba(0,0,0,0.05)'
             }}>
               <img
-                src={`https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(
-                  serverIp.includes('ngrok-free') || serverIp.includes('loca.lt')
-                    ? 'https://' + serverIp
-                    : 'http://' + serverIp + ':3010'
-                )}`}
+                src={`https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(getServerUrl())}`}
                 alt="Connect QR Code"
                 style={{ width: 160, height: 160, display: 'block' }}
               />
             </div>
             
+            {/* 현재 모드 표시 */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, padding: '6px 12px', background: serverConfig.mode === 'local' ? '#f0fdf4' : '#eef2ff', border: `1px solid ${serverConfig.mode === 'local' ? '#86efac' : '#c7d2fe'}`, borderRadius: 8, fontSize: 11.5, color: serverConfig.mode === 'local' ? '#166534' : '#4f46e5' }}>
+              <span>{serverConfig.mode === 'local' ? '📶' : '🌐'}</span>
+              <strong>{serverConfig.mode === 'local' ? '로컬 WiFi 모드' : '외부망(Cloudflare) 모드'}</strong>
+              <span style={{ opacity: 0.7 }}>자동 감지됨</span>
+            </div>
+
             {/* 수동 IP 입력 기능 추가 */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', justifyContent: 'center', marginTop: 4 }}>
-              <span style={{ fontSize: 12, color: '#475569', fontWeight: 600 }}>서버 IP 수정:</span>
+              <span style={{ fontSize: 12, color: '#475569', fontWeight: 600 }}>서버 URL 수정:</span>
               <input
                 type="text"
-                value={serverIp}
-                onChange={e => setServerIp(e.target.value)}
+                value={getServerUrl()}
+                onChange={e => {
+                  const val = e.target.value;
+                  if (serverConfig) setServerConfig({...serverConfig, url: val});
+                }}
                 style={{
                   fontSize: 12,
                   fontFamily: 'monospace',
-                  width: 140,
+                  width: 280,
                   padding: '4px 8px',
                   border: '1px solid #cbd5e1',
                   borderRadius: 6,
