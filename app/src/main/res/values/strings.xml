@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">School MDM</string>
+    <string name="device_admin_description">학교 태블릿 기기 제어 및 관리를 위한 Device Owner 권한입니다.</string>
+</resources>

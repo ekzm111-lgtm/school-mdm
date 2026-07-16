@@ -1,0 +1,41 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.school.mdm'
+    compileSdk 33
+
+    defaultConfig {
+        applicationId "com.school.mdm"
+        minSdk 26
+        targetSdk 33
+        versionCode 1
+        versionName "1.0"
+
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+}
+
+dependencies {
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'com.google.android.material:material:1.9.0'
+    implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
+    
+    // PC 어드민 웹과 실시간 통신을 위한 Socket.io-client
+    implementation 'io.socket:socket.io-client:2.0.1'
+    
+    // QR코드 카메라 스캔 라이브러리 (ZXing)
+    implementation 'com.journeyapps:zxing-android-embedded:4.3.0'
+}
