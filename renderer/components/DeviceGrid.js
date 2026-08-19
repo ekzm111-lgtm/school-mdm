@@ -199,15 +199,26 @@ function DeviceCard({ device:d, selected, onClick, checked, onToggleCheck, delay
         )}
         <div style={{ fontSize:11, color:'#94a3b8', fontFamily:'var(--mono)', textAlign:'center' }}>{d.serial}</div>
         
-        {/* 기기 카드 내에 소속 위치(그룹) 뱃지 노출 */}
-        {d.group && (
+        {/* 기기 카드 내에 소속 위치(그룹) 및 APK 버전 뱃지 노출 */}
+        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', justifyContent: 'center', marginTop: 4 }}>
+          {d.group && (
+            <span style={{
+              fontSize: 10, fontWeight: 700, background: '#e0f2fe', color: '#0369a1',
+              padding: '2px 6px', borderRadius: 4, display: 'inline-block'
+            }}>
+              🏫 {d.group}
+            </span>
+          )}
           <span style={{
-            fontSize: 10, fontWeight: 700, background: '#e0f2fe', color: '#0369a1',
-            padding: '2px 6px', borderRadius: 4, marginTop: 4, display: 'inline-block'
+            fontSize: 10, fontWeight: 700,
+            background: (d.appVersionCode || 1) >= 4 ? '#dcfce7' : (d.appVersionCode || 1) === 3 ? '#e0e7ff' : '#fee2e2',
+            color: (d.appVersionCode || 1) >= 4 ? '#15803d' : (d.appVersionCode || 1) === 3 ? '#4338ca' : '#b91c1c',
+            padding: '2px 6px', borderRadius: 4, display: 'inline-block',
+            border: `1px solid ${(d.appVersionCode || 1) >= 4 ? '#86efac' : (d.appVersionCode || 1) === 3 ? '#a5b4fc' : '#fca5a5'}`
           }}>
-            🏫 {d.group}
+            📲 v{d.appVersionName || ((d.appVersionCode || 1) >= 4 ? '1.3' : (d.appVersionCode || 1) === 3 ? '1.2' : '1.0')}
           </span>
-        )}
+        </div>
 
         {d.ip && <div style={{ fontSize:12, color:'#0891b2', fontFamily:'var(--mono)', marginTop:2 }}>🌐 {d.ip}</div>}
       </div>

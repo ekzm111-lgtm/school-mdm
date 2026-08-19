@@ -181,6 +181,17 @@ export default function DeviceDetail({ device, onClose, onRefresh }) {
             </span>
           } />
           <InfoRow label="IP 주소" value={d.ip || '—'} mono />
+          <InfoRow label="APK 버전" value={
+            <span style={{
+              fontWeight: 700,
+              color: (d.appVersionCode || 1) >= 4 ? '#15803d' : (d.appVersionCode || 1) === 3 ? '#4338ca' : '#b91c1c',
+              background: (d.appVersionCode || 1) >= 4 ? '#dcfce7' : (d.appVersionCode || 1) === 3 ? '#e0e7ff' : '#fee2e2',
+              padding: '2px 8px', borderRadius: 6, fontSize: 12,
+              border: `1px solid ${(d.appVersionCode || 1) >= 4 ? '#86efac' : (d.appVersionCode || 1) === 3 ? '#a5b4fc' : '#fca5a5'}`
+            }}>
+              📲 v{d.appVersionName || ((d.appVersionCode || 1) >= 4 ? '1.3' : (d.appVersionCode || 1) === 3 ? '1.2' : '1.0')} (코드: {d.appVersionCode || 1})
+            </span>
+          } />
           <InfoRow label="배터리" value={
             <span style={{ color: d.battery <= 20 ? '#ef4444' : '#22c55e', fontWeight: 700 }}>
               {d.charging ? '⚡' : ''} {d.battery}%

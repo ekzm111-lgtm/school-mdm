@@ -248,20 +248,26 @@ export default function Dashboard() {
                 {networkMode === 'local' ? '로컬 WiFi' : '외부망'}
               </button>
 
-              {/* ── APK 자동 배포 ── */}
-              {buildStatus ? (
-                <div style={{ display:'flex', alignItems:'center', gap:6, padding:'5px 12px', borderRadius:8,
-                  background: buildStatus.step === 'error' ? '#fee2e2' : buildStatus.step === 'done' ? '#dcfce7' : '#fef3c7',
-                  border: `1.5px solid ${buildStatus.step === 'error' ? '#fca5a5' : buildStatus.step === 'done' ? '#86efac' : '#fde68a'}`,
-                  fontSize:12, fontWeight:700, color: buildStatus.step === 'error' ? '#dc2626' : buildStatus.step === 'done' ? '#16a34a' : '#92400e'
-                }}>
-                  {buildStatus.step === 'done' ? '✅' : buildStatus.step === 'error' ? '❌' : '⏳'} {buildStatus.message}
+              {/* ── APK 자동 배포 버튼 (항상 노출) ── */}
+              <button className="btn btn-ghost btn-sm"
+                onClick={handleBuildAndDeploy}
+                disabled={buildStatus && buildStatus.step !== 'done' && buildStatus.step !== 'error'}
+                style={{ color:'#7c3aed', borderColor:'#a78bfa', background:'#f5f3ff', fontWeight: 800 }}
+              >🚀 APK 업데이트 배포</button>
+
+              {buildStatus && (
+                <div 
+                  onClick={() => setBuildStatus(null)}
+                  title="클릭하면 닫힙니다"
+                  style={{ display:'flex', alignItems:'center', gap:6, padding:'5px 12px', borderRadius:8,
+                    background: buildStatus.step === 'error' ? '#fee2e2' : buildStatus.step === 'done' ? '#dcfce7' : '#fef3c7',
+                    border: `1.5px solid ${buildStatus.step === 'error' ? '#fca5a5' : buildStatus.step === 'done' ? '#86efac' : '#fde68a'}`,
+                    fontSize:12, fontWeight:700, color: buildStatus.step === 'error' ? '#dc2626' : buildStatus.step === 'done' ? '#16a34a' : '#92400e',
+                    cursor: 'pointer'
+                  }}
+                >
+                  {buildStatus.step === 'done' ? '✅' : buildStatus.step === 'error' ? '❌' : '⏳'} {buildStatus.message} ✖
                 </div>
-              ) : (
-                <button className="btn btn-ghost btn-sm"
-                  onClick={handleBuildAndDeploy}
-                  style={{ color:'#7c3aed', borderColor:'#ddd6fe', background:'#f5f3ff' }}
-                >🚀 APK 배포</button>
               )}
               {checkedSerials.length > 0 && (
                 <div style={{ display: 'flex', gap: 6 }} className="animate-fade">
