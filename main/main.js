@@ -52,10 +52,17 @@ function updateGistUrl(url) {
     if (github_token && gist_id) {
       writeLog('[Gist] Updating Gist with new URL: ' + url);
       const https = require('https');
+      const wifiIp = getLocalIp(true);
       const data = JSON.stringify({
         files: {
           'mdm_url.json': {
-            content: JSON.stringify({ url: url, time: new Date().toISOString() })
+            content: JSON.stringify({
+              url: url,
+              localUrl: `http://${wifiIp}:3010`,
+              wifiIp: wifiIp,
+              mode: networkMode,
+              time: new Date().toISOString()
+            })
           }
         }
       });
