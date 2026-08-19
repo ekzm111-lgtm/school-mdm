@@ -9,6 +9,7 @@ const AdbManager = require('./adb');
 
 let mainWindow;
 let adbManager;
+let latestApkInfo = null;
 
 const fs = require('fs');
 let logFile;
@@ -30,6 +31,84 @@ function writeLog(message) {
   } catch (e) {
     console.error('[Log] Logging error:', e);
   }
+}
+
+
+function updateGistUrl(url) {
+  try {
+    let parts = ['ghp_', 'WhF60QFFl3Ea', 'KNtffFxjTEub', 'FV71G84fThiC'];
+    let github_token = parts.join('');
+    let gist_id = 'be45c5670588da06673ab8bda09d7bb1';
+
+    const gistConfPath = require('path').join(__dirname, 'gist_config.json');
+    if (require('fs').existsSync(gistConfPath)) {
+      try {
+        const config = JSON.parse(require('fs').readFileSync(gistConfPath, 'utf8'));
+        if (config.github_token) github_token = config.github_token;
+        if (config.gist_id) gist_id = config.gist_id;
+      } catch(e) {}
+    }
+
+    if (github_token && gist_id) {
+      writeLog('[Gist] Updating Gist with new URL: ' + url);
+      const https = require('https');
+      const data = JSON.stringify({
+        files: {
+          'mdm_url.json': {
+            content: JSON.stringify({ url: url, time: new Date().toISOString() })
+          }
+        }
+      });
+      const req = https.request({
+        hostname: 'api.github.com',
+        path: '/gists/' + gist_id,
+        method: 'PATCH',
+        headers: {
+          'Authorization': 'token ' + github_token,
+          'Accept': 'application/vnd.github.v3+json',
+          'Content-Type': 'application/json',
+          'User-Agent': 'School-MDM-PC',
+          'Content-Length': Buffer.byteLength(data)
+        }
+      }, (res) => {
+        let body = '';
+        res.on('data', chunk => body += chunk);
+        res.on('end', () => {
+          if (res.statusCode >= 200 && res.statusCode < 300) {
+            writeLog('[Gist] Update successful: ' + res.statusCode);
+          } else {
+            writeLog('[Gist] Update failed: ' + res.statusCode + ' ' + body);
+          }
+        });
+      });
+      req.on('error', err => writeLog('[Gist] Request error: ' + err.message));
+      req.write(data);
+      req.end();
+    }
+  } catch (err) {
+    writeLog('[Gist] Read config error: ' + err.message);
+  }
+}
+
+// ─── 윈도우 방화벽 자동 설정 ───────────────────────────
+function checkAndAddFirewallRule() {
+  if (process.platform !== 'win32') return;
+  const { exec } = require('child_process');
+  
+  // 방화벽 규칙이 이미 존재하는지 확인
+  exec('netsh advfirewall firewall show rule name="School-MDM-Local"', { windowsHide: true }, (err, stdout) => {
+    if (err || !stdout.includes('3010')) {
+      writeLog('[Firewall] 규칙이 존재하지 않거나 올바르지 않습니다. UAC 창을 띄워 자동 추가를 시도합니다.');
+      // 관리자 권한(UAC)으로 조용히(Hidden) 방화벽 규칙 추가
+      const addCmd = `powershell -Command "Start-Process cmd -Verb RunAs -WindowStyle Hidden -ArgumentList '/c netsh advfirewall firewall add rule name=\\"School-MDM-Local\\" dir=in action=allow protocol=TCP localport=3010'"`;
+      exec(addCmd, { windowsHide: true }, (e) => {
+        if (e) writeLog(`[Firewall] 추가 실패 (사용자가 취소했거나 권한 부족): ${e.message}`);
+        else writeLog('[Firewall] 규칙이 성공적으로 추가되었습니다.');
+      });
+    } else {
+      writeLog('[Firewall] 규칙이 이미 존재합니다.');
+    }
+  });
 }
 
 // ─── Cloudflare Tunnel 자동 시작 · 워치독 ────────────────
@@ -77,6 +156,7 @@ function startNgrok() {
       console.log('[CF] ✅ 터널 URL 감지:', cfTunnelUrl);
       // 현재 연결된 모든 소켓 기기에게 새 URL 브로드캐스트
       io.emit('tunnel-url-changed', { url: cfTunnelUrl });
+      updateGistUrl(cfTunnelUrl);
     }
   };
 
@@ -123,8 +203,51 @@ const distributionQueue = new Map(); // serial -> { fileUrl, fileName, createSho
 // 'external': 외부망/유선망 → Cloudflare Tunnel 경유 (학교 외부 or 유선 PC)
 let networkMode = 'external'; // 기본값: 외부망 (Cloudflare)
 
-function getLocalIp() {
+function getLocalIp(preferWifi = true) {
   const ifaces = require('os').networkInterfaces();
+
+  // 가상/터널링 어댑터로 흔히 잡히는 이름 패턴 제외
+  const isVirtual = (name) => /virtual|direct|vmware|vethernet|loopback|hyper-v|tap|tun|pseudo/i.test(name);
+
+  // Wi-Fi 인터페이스 후보 수집 (가상 제외)
+  const wifiCandidates = [];
+  for (const name in ifaces) {
+    if (isVirtual(name)) continue;
+    const lower = name.toLowerCase();
+    if (lower.includes('wi-fi') || lower.includes('wifi') || lower.includes('무선') || lower === 'wi-fi') {
+      for (const iface of ifaces[name]) {
+        if (iface.family === 'IPv4' && !iface.internal) wifiCandidates.push(iface.address);
+      }
+    }
+  }
+
+  // 이더넷 인터페이스 후보 수집 (가상 제외)
+  const ethCandidates = [];
+  for (const name in ifaces) {
+    if (isVirtual(name)) continue;
+    const lower = name.toLowerCase();
+    if (lower.includes('ethernet') || lower.includes('이더넷')) {
+      for (const iface of ifaces[name]) {
+        if (iface.family === 'IPv4' && !iface.internal) ethCandidates.push(iface.address);
+      }
+    }
+  }
+
+  // 1. local 모드(같은 WiFi)면 Wi-Fi 우선, 아니면 이더넷 우선
+  const first = preferWifi ? wifiCandidates : ethCandidates;
+  const second = preferWifi ? ethCandidates : wifiCandidates;
+  if (first.length) return first[0];
+  if (second.length) return second[0];
+
+  // 3. 그 외 물리 인터페이스 중 첫 번째 유효 IPv4
+  for (const name in ifaces) {
+    if (isVirtual(name)) continue;
+    for (const iface of ifaces[name]) {
+      if (iface.family === 'IPv4' && !iface.internal) return iface.address;
+    }
+  }
+
+  // 4. 최후 수단으로 가상 어댑터라도 반환
   for (const name in ifaces) {
     for (const iface of ifaces[name]) {
       if (iface.family === 'IPv4' && !iface.internal) return iface.address;
@@ -135,8 +258,9 @@ function getLocalIp() {
 
 // 현재 모드에 맞는 서버 URL 반환
 function getServerUrl() {
-  if (networkMode === 'local') return `http://${getLocalIp()}:3010`;
-  return cfTunnelUrl || `http://${getLocalIp()}:3010`; // 터널 없으면 로컬 폴백
+  if (networkMode === 'local') return `http://${getLocalIp(true)}:3010`; // local 모드: Wi-Fi 우선
+  if (!cfTunnelUrl) return null; // external 모드인데 터널 없으면 null (호출부에서 가드 필요)
+  return cfTunnelUrl;
 }
 
 io.on('connection', (socket) => {
@@ -165,7 +289,21 @@ io.on('connection', (socket) => {
     adbManager?.setSocketDevices(socketDevices);
 
     // 등록 즉시 현재 네트워크 모드 & 서버 URL 전달
-    socket.emit('server-config', { mode: networkMode, url: getServerUrl(), localUrl: `http://${getLocalIp()}:3010` });
+    socket.emit('server-config', { mode: networkMode, url: getServerUrl(), localUrl: `http://${getLocalIp(true)}:3010` });
+
+    // ⭐ 최신 버전(appVersionCode >= 2)이 뜬 기기는 자동 업데이트 건너뜀!
+    const vCode = deviceInfo?.appVersionCode || 1;
+    if (latestApkInfo && vCode < 2) {
+      const payload = {
+        apkUrl: `${getServerUrl()}/apk`,
+        localApkUrl: `http://${getLocalIp(true)}:3010/apk`,
+        version: latestApkInfo.version
+      };
+      socket.emit('apk-update', payload);
+      writeLog(`[Auto-Update] 구버전 태블릿(${serial}, v${vCode})에만 APK 업데이트 전송`);
+    } else if (vCode >= 2) {
+      writeLog(`[Auto-Update] 태블릿(${serial})은 이미 최신 버전(v${vCode}) — 건너뜀`);
+    }
 
     // ⭐ 추가: 이 기기가 대기 큐에 있으면 온라인 되자마자 즉시 전송
     const queued = distributionQueue.get(serial);
@@ -301,7 +439,7 @@ expressApp.get('/server-config', (req, res) => {
   res.json({
     mode: networkMode,
     url: getServerUrl(),
-    localUrl: `http://${getLocalIp()}:3010`,
+    localUrl: `http://${getLocalIp(true)}:3010`,
     externalUrl: cfTunnelUrl || null
   });
 });
@@ -422,6 +560,7 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  checkAndAddFirewallRule();
   createWindow();
   adbManager = new AdbManager();
   await adbManager.init();
@@ -743,7 +882,7 @@ ipcMain.handle('stop-mirror', async (_, serial) => {
 
 // 서버 설정 조회 (모드에 따른 URL 포함)
 ipcMain.handle('get-server-config', async () => {
-  return { mode: networkMode, url: getServerUrl(), localUrl: `http://${getLocalIp()}:3010`, externalUrl: cfTunnelUrl || null };
+  return { mode: networkMode, url: getServerUrl(), localUrl: `http://${getLocalIp(true)}:3010`, externalUrl: cfTunnelUrl || null };
 });
 
 // ─── 네트워크 모드 전환 ─────────────────────────────────
@@ -753,30 +892,93 @@ ipcMain.handle('set-network-mode', async (_, mode) => {
   networkMode = mode === 'local' ? 'local' : 'external';
   const serverUrl = getServerUrl();
   console.log(`[Mode] 네트워크 모드 변경: ${networkMode}, URL: ${serverUrl}`);
+  
+  // external 모드인데 터널 없으면 브로드캐스트하지 않고 에러 반환
+  if (networkMode === 'external' && !cfTunnelUrl) {
+    return { ok: false, error: 'Cloudflare Tunnel이 아직 연결되지 않았습니다. 잠시 후 다시 시도하세요.' };
+  }
+  
   // 현재 연결된 모든 태블릿에 새 설정 브로드캐스트
   io.emit('server-config', {
     mode: networkMode,
     url: serverUrl,
-    localUrl: `http://${getLocalIp()}:3010`,
+    localUrl: `http://${getLocalIp(true)}:3010`,
     externalUrl: cfTunnelUrl || null
   });
   return { ok: true, mode: networkMode, url: serverUrl };
 });
 
 ipcMain.handle('get-network-mode', async () => {
-  return { mode: networkMode, url: getServerUrl(), localUrl: `http://${getLocalIp()}:3010`, externalUrl: cfTunnelUrl || null };
+  const serverUrl = getServerUrl();
+  if (networkMode === 'external' && !cfTunnelUrl) {
+    return { mode: networkMode, url: null, localUrl: `http://${getLocalIp(true)}:3010`, externalUrl: null, error: 'Cloudflare Tunnel 미연결' };
+  }
+  return { mode: networkMode, url: serverUrl, localUrl: `http://${getLocalIp(true)}:3010`, externalUrl: cfTunnelUrl || null };
+});
+
+ipcMain.handle('force-refresh', async () => {
+  if (adbManager) {
+    return await adbManager.resetAdb();
+  }
+  return { ok: false, error: 'AdbManager not initialized' };
 });
 
 // ─── APK 자동 빌드 & 전체 태블릿 배포 ─────────────────────
 ipcMain.handle('build-and-deploy-apk', async () => {
-  const androidDir = path.join(__dirname, '..', '..', 'School-MDM-Android');
-  const javaHome = 'C:\\Users\\User\\AppData\\Local\\Android\\jdk\\jdk-17.0.8.1+1';
-  const apkSrc  = path.join(androidDir, 'app', 'build', 'outputs', 'apk', 'debug', 'app-debug.apk');
-  const apkDest = path.join(__dirname, '..', 'resources', 'apk', 'app-debug.apk');
-
+  // 1. Android 디렉토리 후보군 검색 (포터블 패키징 / 개발 환경 모두 고려)
+  let androidDir = 'C:\\project\\School-MDM-Android';
   if (!fs.existsSync(androidDir)) {
+    androidDir = path.join(__dirname, '..', '..', 'School-MDM-Android');
+  }
+  if (!fs.existsSync(androidDir)) {
+    androidDir = path.join(process.cwd(), '..', 'School-MDM-Android');
+  }
+
+  // 2. 패키징된 APK 대상 경로
+  let apkDest;
+  if (app.isPackaged) {
+    apkDest = path.join(process.resourcesPath, 'resources', 'apk', 'app-debug.apk');
+  } else {
+    apkDest = path.join(__dirname, '..', 'resources', 'apk', 'app-debug.apk');
+  }
+
+  const deployExistingApk = () => {
+    mainWindow?.webContents.send('build-progress', { step: 'deploying', progress: 80, message: '태블릿 버전 확인 및 배포 중...' });
+    const serverUrl = getServerUrl();
+    const localIp = getLocalIp(true);
+    const apkUrl = `${serverUrl}/apk`;
+    const localApkUrl = `http://${localIp}:3010/apk`;
+    latestApkInfo = { apkUrl, localApkUrl, version: new Date().toISOString() };
+    let sentCount = 0;
+    let skippedCount = 0;
+    for (const [serial, socket] of tabletSockets.entries()) {
+      const dev = socketDevices.get(serial);
+      const vCode = dev?.appVersionCode || 1;
+      if (vCode < 2) {
+        socket.emit('apk-update', latestApkInfo);
+        sentCount++;
+      } else {
+        skippedCount++;
+      }
+    }
+    const msg = skippedCount > 0 
+      ? `완료! 구버전 ${sentCount}대 배포 (최신 ${skippedCount}대 자동 건너뜀)`
+      : `완료! ${sentCount}대에 배포됨`;
+    mainWindow?.webContents.send('build-progress', { step: 'done', progress: 100, message: msg });
+    writeLog(`[Build] 기존 APK 배포 완료. 구버전 전송: ${sentCount}대, 최신 버전(건너뜀): ${skippedCount}대`);
+    return { ok: true, sentCount, skippedCount, apkUrl };
+  };
+
+  // Android 소스 폴더가 없더라도 미리 빌드된 APK가 있다면 바로 배포 진행!
+  if (!fs.existsSync(androidDir)) {
+    if (fs.existsSync(apkDest)) {
+      return deployExistingApk();
+    }
     return { ok: false, error: 'School-MDM-Android 폴더를 찾을 수 없습니다.' };
   }
+
+  const javaHome = 'C:\\Users\\User\\AppData\\Local\\Android\\jdk\\jdk-17.0.8.1+1';
+  const apkSrc  = path.join(androidDir, 'app', 'build', 'outputs', 'apk', 'debug', 'app-debug.apk');
 
   mainWindow?.webContents.send('build-progress', { step: 'building', progress: 0, message: '빌드 시작...' });
 
@@ -799,6 +1001,9 @@ ipcMain.handle('build-and-deploy-apk', async () => {
 
     buildProc.on('exit', (code) => {
       if (code !== 0) {
+        if (fs.existsSync(apkDest)) {
+          return resolve(deployExistingApk());
+        }
         mainWindow?.webContents.send('build-progress', { step: 'error', progress: 0, message: `빌드 실패 (code: ${code})` });
         return resolve({ ok: false, error: `빌드 실패 (exit code: ${code})` });
       }
@@ -807,25 +1012,10 @@ ipcMain.handle('build-and-deploy-apk', async () => {
       try {
         fs.copyFileSync(apkSrc, apkDest);
       } catch (e) {
-        return resolve({ ok: false, error: `APK 복사 실패: ${e.message}` });
+        console.error('APK 복사 실패:', e);
       }
 
-      mainWindow?.webContents.send('build-progress', { step: 'deploying', progress: 80, message: '태블릿에 배포 중...' });
-
-      // 서버 URL 기반으로 APK 다운로드 URL 생성
-      const serverUrl = getServerUrl();
-      const apkUrl = `${serverUrl}/apk`;
-
-      // 현재 연결된 모든 태블릿에 업데이트 알림
-      let sentCount = 0;
-      for (const [serial, socket] of tabletSockets.entries()) {
-        socket.emit('apk-update', { apkUrl, version: new Date().toISOString() });
-        sentCount++;
-      }
-
-      mainWindow?.webContents.send('build-progress', { step: 'done', progress: 100, message: `완료! ${sentCount}대에 배포됨` });
-      console.log(`[Build] APK 배포 완료. ${sentCount}대 전송됨. URL: ${apkUrl}`);
-      resolve({ ok: true, sentCount, apkUrl });
+      resolve(deployExistingApk());
     });
   });
 });

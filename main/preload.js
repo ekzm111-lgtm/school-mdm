@@ -58,6 +58,7 @@ contextBridge.exposeInMainWorld('mdm', {
     setNetworkMode: (mode) => ipcRenderer.invoke('set-network-mode', mode),
     getNetworkMode: () => ipcRenderer.invoke('get-network-mode'),
     getServerConfig: () => ipcRenderer.invoke('get-server-config'),
+    forceRefresh: () => ipcRenderer.invoke('force-refresh'),
 
     // APK 자동 빌드 & 전체 배포
 

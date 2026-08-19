@@ -142,16 +142,18 @@ function DeviceCard({ device:d, selected, onClick, checked, onToggleCheck, delay
   return (
     <div
       style={{
-        background: selected ? '#eef2ff' : '#ffffff',
-        border: selected ? '2px solid #4f46e5' : '1.5px solid #e2e8f0',
+        background: selected ? '#eef2ff' : (online ? '#ffffff' : '#f1f5f9'),
+        border: selected ? '2px solid #4f46e5' : (online ? '1.5px solid #e2e8f0' : '1.5px solid #cbd5e1'),
         borderRadius: 12,
         padding: 14,
         cursor: 'pointer',
         transition: 'all 0.16s ease',
         display: 'flex', flexDirection: 'column', gap: 10,
-        opacity: online ? 1 : 0.55,
-        boxShadow: selected ? '0 0 0 3px rgba(79,70,229,0.15), 0 4px 12px rgba(0,0,0,0.1)' : '0 1px 4px rgba(0,0,0,0.07)',
+        opacity: online ? 1 : 0.85,
+        boxShadow: selected ? '0 0 0 3px rgba(79,70,229,0.15), 0 4px 12px rgba(0,0,0,0.1)' : '0 1px 4px rgba(0,0,0,0.05)',
         animation: `fade-in 0.28s ease ${delay}ms both`,
+        userSelect: 'none',
+        WebkitUserSelect: 'none',
       }}
       onClick={onClick}
       onMouseEnter={e => { if(!selected) e.currentTarget.style.boxShadow='0 6px 18px rgba(0,0,0,0.12)'; e.currentTarget.style.transform='translateY(-2px)'; }}

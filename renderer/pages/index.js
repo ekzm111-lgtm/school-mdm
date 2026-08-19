@@ -108,6 +108,22 @@ export default function Dashboard() {
     setLoading('');
   };
 
+  const handleForceRefresh = async () => {
+    if (!isMdm) return;
+    setLoading('refresh');
+    try {
+      const res = await window.mdm.forceRefresh();
+      if (res && res.ok) {
+        // Will be updated via onDeviceUpdate automatically
+      } else {
+        alert('다시 불러오기 실패: ' + (res?.error || '알 수 없는 오류'));
+      }
+    } catch (e) {
+      console.error(e);
+    }
+    setLoading('');
+  };
+
   const handleToggleCheck = (serial, shiftKey, visibleSerials) => {
     if (shiftKey && lastCheckedSerial && visibleSerials) {
       const lastIdx = visibleSerials.indexOf(lastCheckedSerial);
@@ -210,6 +226,11 @@ export default function Dashboard() {
               }}>📢 전체 알림</button>
               <button className="btn btn-ghost btn-sm" onClick={() => setShowFileDistribute(true)}>📁 파일 배포</button>
               <button className="btn btn-ghost btn-sm" onClick={() => setShowLocationManager(true)} style={{ color:'#4f46e5', borderColor:'#c7d2fe', background:'#eef2ff' }}>🗂️ 장소 관리</button>
+              
+              {/* ── 다시 불러오기 (새로고침) ── */}
+              <button className="btn btn-ghost btn-sm" onClick={handleForceRefresh} disabled={loading === 'refresh'} style={{ color:'#059669', borderColor:'#a7f3d0', background:'#ecfdf5' }}>
+                🔄 {loading === 'refresh' ? '불러오는 중...' : '다시 불러오기'}
+              </button>
 
               {/* ── 네트워크 모드 토글 ── */}
               <button

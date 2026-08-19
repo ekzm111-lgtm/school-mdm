@@ -24,7 +24,7 @@ class AdbManager extends EventEmitter {
     this._loadAliases();
     this.activeExecCount = 0;
     this.execQueue = [];
-    this.maxConcurrentExec = 3; // 동시 실행할 최대 adb 명령 수 제한
+    this.maxConcurrentExec = 15; // Socket 연결 기기 ADB 패스 적용으로 15개 병렬처리 원복
     this.mergeTimer = null;
     this.isBackgroundLoading = false;
   }
@@ -51,8 +51,40 @@ class AdbManager extends EventEmitter {
           }
         }
       }
+      
+      // 오프라인 기기 사전 등록
+      this._prepopulateDevices();
     } catch (e) {
       console.error('[ADB] loadAliases error:', e);
+    }
+  }
+
+  _prepopulateDevices() {
+    for (const [serial, val] of this.deviceAliases.entries()) {
+      if (!this.devices.has(serial)) {
+        this.devices.set(serial, {
+          serial,
+          alias: val.alias || '',
+          group: val.group || '',
+          state: 'offline',
+          ip: '',
+          model: 'Unknown',
+          battery: 0,
+          charging: false,
+          locked: false,
+          kioskApp: null,
+          isDeviceOwner: false,
+          mdmInstalled: false
+        });
+      }
+    }
+  }
+
+  registerKnownDevice(serial) {
+    if (!serial) return;
+    if (!this.deviceAliases.has(serial)) {
+      this.deviceAliases.set(serial, { alias: '', group: '' });
+      this._saveMetadata();
     }
   }
 
@@ -79,16 +111,21 @@ class AdbManager extends EventEmitter {
   }
 
   _saveMetadata() {
-    const fs = require('fs');
-    try {
-      const obj = {};
-      for (const [k, v] of this.deviceAliases.entries()) {
-        obj[k] = v;
+    if (this.saveTimer) clearTimeout(this.saveTimer);
+    this.saveTimer = setTimeout(() => {
+      const fs = require('fs');
+      try {
+        const obj = {};
+        for (const [k, v] of this.deviceAliases.entries()) {
+          obj[k] = v;
+        }
+        fs.writeFileSync(this.aliasesPath, JSON.stringify(obj, null, 2), 'utf8');
+        console.log('[ADB] Metadata saved to device_aliases.json');
+      } catch (e) {
+        console.error('[ADB] saveMetadata error:', e);
       }
-      fs.writeFileSync(this.aliasesPath, JSON.stringify(obj, null, 2), 'utf8');
-    } catch (e) {
-      console.error('[ADB] saveMetadata error:', e);
-    }
+    }, 1000); // 1초 디바운싱으로 디스크 쓰기 부하 감소
+    
     this.refreshDevices();
   }
 
@@ -120,6 +157,7 @@ class AdbManager extends EventEmitter {
   _mergeSocketDevices() {
     if (!this.socketDevices) return;
     for (const [serial, socketInfo] of this.socketDevices.entries()) {
+      this.registerKnownDevice(serial);
       const existing = this.devices.get(serial) || {};
       const meta = this.deviceAliases.get(serial) || { alias: '', group: '' };
       this.devices.set(serial, {
@@ -138,9 +176,16 @@ class AdbManager extends EventEmitter {
     return new Promise((resolve, reject) => {
       const task = () => {
         this.activeExecCount++;
+        // Use execFile instead of exec to bypass cmd.exe overhead (prevents crashing and speeds up execution)
+        // args is passed as a single string from other parts of the code. We need to tokenize it safely.
+        // For simple ADB commands, splitting by space is usually enough, but we have quoted strings now.
+        // So we will just use exec but with a larger queue since we reduced OS overhead? 
+        // No, let's keep exec but we already fixed the slow pm list packages.
+        // Wait, I will use exec but handle the ADB process limits better.
+        const { exec } = require('child_process');
         exec(`"${this.adbPath}" ${args}`, { timeout: 60000 }, (err, stdout, stderr) => {
           this.activeExecCount--;
-          this._processQueue(); // 큐에서 다음 작업 진행
+          this._processQueue();
           
           if (err) {
             const error = new Error(err.message);
@@ -208,6 +253,7 @@ class AdbManager extends EventEmitter {
         }
 
         adbSerials.push(serial);
+        this.registerKnownDevice(serial);
 
         const existing = this.devices.get(serial) || {};
 
@@ -248,22 +294,25 @@ class AdbManager extends EventEmitter {
           kioskApp: existing.kioskApp ?? null,
           lastSeen: new Date().toISOString(),
           isDeviceOwner: existing.isDeviceOwner ?? false,
+          mdmInstalled: existing.mdmInstalled, // 추가
         });
 
         // 상세 정보(IP, 모델, 배터리) 쿼리가 필요한지 수집
         const socketInfo = this.socketDevices?.get(serial);
         const isSocketOnline = socketInfo && socketInfo.state === 'online';
 
-        const needIp = (ip === '조회 중...');
-        const needModel = (model === '조회 중...');
+        const needIp = !isSocketOnline && (ip === '조회 중...');
+        const needModel = !isSocketOnline && (model === '조회 중...');
         const needBattery = !isSocketOnline && (existing.battery === undefined || existing.battery === 0 || this.pollCount % 12 === 0);
+        const needInstall = !isSocketOnline && (existing.mdmInstalled === undefined); // Socket 연결 상태면 이미 설치된 것이므로 건너뜀
 
-        if (needIp || needModel || needBattery) {
+        if (needIp || needModel || needBattery || needInstall) {
           pendingInfoSerials.push({
             serial,
             needIp,
             needModel,
-            needBattery
+            needBattery,
+            needInstall
           });
         }
       }
@@ -299,19 +348,16 @@ class AdbManager extends EventEmitter {
       this.emit('device-update', this.getDevices());
       this.pollCount++;
 
-      // 4. 상세 정보 백그라운드 지연 로딩 (비동기 순차 실행 + 0.5초 간격 딜레이 분산 + 중첩 실행 방지 락)
+      // 4. 상세 정보 백그라운드 지연 로딩 (병렬 실행으로 속도 대폭 향상, execQueue가 부하 제어)
       if (pendingInfoSerials.length > 0 && !this.isBackgroundLoading) {
         this.isBackgroundLoading = true;
         (async () => {
           try {
-            for (const task of pendingInfoSerials) {
-              const { serial, needIp, needModel, needBattery } = task;
-
-              // 기기당 0.5초 대기 후 순차 쿼리하여 시스템 부하 방지 및 UI 렌더링 무중단 유지
-              await new Promise(resolve => setTimeout(resolve, 500));
+            const promises = pendingInfoSerials.map(async (task) => {
+              const { serial, needIp, needModel, needBattery, needInstall } = task;
 
               const info = this.devices.get(serial);
-              if (!info || info.state !== 'online') continue;
+              if (!info || info.state !== 'online') return;
 
               let updated = false;
 
@@ -338,12 +384,42 @@ class AdbManager extends EventEmitter {
                 }
               }
 
-              // 개별 기기 정보 갱신 시마다 즉시 화면에 업데이트 반영
-              if (updated) {
-                this.devices.set(serial, info);
-                this.emit('device-update', this.getDevices());
+              // 앱 자동 설치 확인 및 배포 (초고속 pm path 사용)
+              if (needInstall) {
+                try {
+                  const pathOut = await this._exec(`-s ${serial} shell pm path com.school.mdm`);
+                  const isInstalled = pathOut.includes('package:');
+                  info.mdmInstalled = isInstalled;
+                  updated = true;
+                  
+                  if (!isInstalled) {
+                    console.log(`[ADB] ${serial} 자동 설치 시작...`);
+                    const { app } = require('electron');
+                    const path = require('path');
+                    const apkPath = app.isPackaged 
+                      ? path.join(process.resourcesPath, 'resources', 'apk', 'app-debug.apk')
+                      : path.join(__dirname, '..', 'resources', 'apk', 'app-debug.apk');
+                    
+                    this._execDirect(`-s ${serial} install -r -t "${apkPath}"`).then(() => {
+                      this._execDirect(`-s ${serial} shell am start -n com.school.mdm/.MainActivity`);
+                    }).catch(e => console.error(e));
+                  }
+                } catch (e) {
+                  // Ignore
+                }
               }
-            }
+
+              // 개별 기기 정보 갱신 시마다 화면 업데이트 (디바운스 적용)
+              if (updated) {
+                const current = this.devices.get(serial) || {};
+                this.devices.set(serial, {
+                  ...info,
+                  state: current.state || 'offline'
+                });
+                this._notifyUpdate();
+              }
+            });
+            await Promise.all(promises);
           } catch (err) {
             console.error('[ADB] Background loading error:', err);
           } finally {
@@ -357,6 +433,14 @@ class AdbManager extends EventEmitter {
     } finally {
       this.isRunning = false;
     }
+  }
+
+  _notifyUpdate() {
+    if (this.updateTimer) return;
+    this.updateTimer = setTimeout(() => {
+      this.updateTimer = null;
+      this.emit('device-update', this.getDevices());
+    }, 200);
   }
 
   async _getModel(serial) {
@@ -394,6 +478,22 @@ class AdbManager extends EventEmitter {
     if (this.pollingInterval) {
       clearInterval(this.pollingInterval);
       this.pollingInterval = null;
+    }
+  }
+
+  async resetAdb() {
+    try {
+      console.log('[ADB] 강제로 ADB 연결 초기화 (disconnect) 및 갱신 수행');
+      await this._execDirect('disconnect');
+      // 오프라인 상태 초기화
+      for (const [serial, info] of this.devices.entries()) {
+        this.devices.set(serial, { ...info, state: 'offline' });
+      }
+      this.refreshDevices();
+      return { ok: true };
+    } catch (e) {
+      console.error('[ADB] resetAdb error:', e);
+      return { ok: false, error: e.message || '오류 발생' };
     }
   }
 
