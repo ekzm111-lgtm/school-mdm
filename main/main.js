@@ -208,13 +208,13 @@ expressApp.use(cors());
 const server = http.createServer(expressApp);
 const io = new Server(server, {
   cors: { origin: "*" },
-  // ⭐ 클라이언트와 동일하게 websocket only → Cloudflare HTTP polling 병목 완전 제거
-  transports: ['websocket'],
-  // 끊어진 기기를 빠르게 감지하여 재연결 유도 (기본값 90s → 10s)
-  pingTimeout: 10000,
+  // ⭐ 구버전(polling) 및 신버전(websocket) 태블릿 모두 접속 허용
+  transports: ['polling', 'websocket'],
+  // 끊어진 기기를 빠르게 감지하여 재연결 유도 (기본값 90s → 15s)
+  pingTimeout: 15000,
   pingInterval: 5000,
   // 연결 허용 대기시간 (25대 동시 접속 대비)
-  connectTimeout: 10000,
+  connectTimeout: 15000,
 });
 
 const tabletSockets = new Map(); // serial -> socket instance
