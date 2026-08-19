@@ -123,8 +123,9 @@ public class MdmService extends Service {
             opts.extraHeaders = new java.util.HashMap<>();
             opts.extraHeaders.put("ngrok-skip-browser-warning", java.util.Arrays.asList("true"));
             opts.reconnection = true;
-            opts.reconnectionAttempts = 2;
-            opts.reconnectionDelay = 500;
+            opts.reconnectionAttempts = Integer.MAX_VALUE; // 영원히 재연결 시도
+            opts.reconnectionDelay = 300;  // 첫 연결 실패 후 0.3초 대기
+            opts.reconnectionDelayMax = 3000; // 최대 3초 대기 후 재시도 (기본 5초에서 단축)
             
             mSocket = IO.socket(savedUrl, opts);
             
@@ -169,8 +170,8 @@ public class MdmService extends Service {
                 public void call(Object... args) {
                     mReconnectAttempts++;
                     Log.w(TAG, "[Socket] 연결 실패 (시도 " + mReconnectAttempts + ")");
-                    if (mReconnectAttempts >= 2) {
-                        // 2회 실패 시 (단 1초 만에!) 즉시 Gist/로컬에서 새 URL 조회
+                    if (mReconnectAttempts >= 3) {
+                        // 3회 실패 시 (1.5초 만에!) 즉시 Gist/로컬에서 새 URL 조회
                         new Thread(() -> fetchTunnelUrlFromLocal()).start();
                         mReconnectAttempts = 0;
                     }
@@ -421,8 +422,8 @@ public class MdmService extends Service {
             device.put("battery", getBatteryLevel());
             device.put("charging", isBatteryCharging());
             device.put("ip", getLocalIpAddress());
-            device.put("appVersionCode", 2);
-            device.put("appVersionName", "1.1");
+            device.put("appVersionCode", 3);
+            device.put("appVersionName", "1.2");
             mSocket.emit("register", device);
         } catch (Exception e) {
             Log.e(TAG, "Register error", e);
@@ -521,8 +522,8 @@ public class MdmService extends Service {
             try {
                 java.net.URL url = new java.net.URL(apiUrl);
                 java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
-                conn.setConnectTimeout(1000);
-                conn.setReadTimeout(1000);
+                conn.setConnectTimeout(800);  // 로칼 연결 매우 빠름 (0.8초에 탈락)
+                conn.setReadTimeout(800);
                 int code = conn.getResponseCode();
                 if (code == 200) {
                     java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.InputStreamReader(conn.getInputStream()));
@@ -557,7 +558,7 @@ public class MdmService extends Service {
             try {
                 java.net.URL url = new java.net.URL("https://api.github.com/gists/" + gistId);
                 java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
-                conn.setConnectTimeout(2000);
+                conn.setConnectTimeout(1200);  // Gist API 타임아웃 1.2초
                 conn.setRequestProperty("User-Agent", "School-MDM-Android/1.0");
                 if (conn.getResponseCode() == 200) {
                     java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.InputStreamReader(conn.getInputStream()));
