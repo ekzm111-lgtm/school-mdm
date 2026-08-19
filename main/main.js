@@ -318,9 +318,9 @@ io.on('connection', (socket) => {
     // 등록 즉시 현재 네트워크 모드 & 서버 URL 전달
     socket.emit('server-config', { mode: networkMode, url: getServerUrl(), localUrl: `http://${getLocalIp(true)}:3010` });
 
-    // ⭐ 최신 버전(appVersionCode >= 3)이 뜬 기기는 자동 업데이트 건너뜀!
+    // ⭐ 최신 버전(appVersionCode >= 4)이 뜬 기기는 자동 업데이트 건너뜀!
     const vCode = deviceInfo?.appVersionCode || 1;
-    if (latestApkInfo && vCode < 3) {
+    if (latestApkInfo && vCode < 4) {
       const payload = {
         apkUrl: `${getServerUrl()}/apk`,
         localApkUrl: `http://${getLocalIp(true)}:3010/apk`,
@@ -328,7 +328,7 @@ io.on('connection', (socket) => {
       };
       socket.emit('apk-update', payload);
       writeLog(`[Auto-Update] 구버전 태블릿(${serial}, v${vCode})에만 APK 업데이트 전송`);
-    } else if (vCode >= 3) {
+    } else if (vCode >= 4) {
       writeLog(`[Auto-Update] 태블릿(${serial})은 이미 최신 버전(v${vCode}) — 건너뜀`);
     }
 
@@ -1019,7 +1019,7 @@ ipcMain.handle('build-and-deploy-apk', async () => {
     for (const [serial, socket] of tabletSockets.entries()) {
       const dev = socketDevices.get(serial);
       const vCode = dev?.appVersionCode || 1;
-      if (vCode < 3) {
+      if (vCode < 4) {
         socket.emit('apk-update', latestApkInfo);
         sentCount++;
       } else {
