@@ -68,8 +68,8 @@ public class MdmService extends Service {
     private Runnable mMirrorRunnable;
     private boolean mIsMirroring = false;
 
-    // 20분 주기 하트비트 (배터리·IP 자동 전송)
-    private static final long HEARTBEAT_INTERVAL_MS = 20 * 60 * 1000L; // 20분
+    // 15초마다 하트비트 (engine.io pingTimeout 20초보다 짧게)
+    private static final long HEARTBEAT_INTERVAL_MS = 15 * 1000L; // 15초
     private final android.os.Handler mHeartbeatHandler = new android.os.Handler(android.os.Looper.getMainLooper());
     private final Runnable mHeartbeatRunnable = new Runnable() {
         @Override
@@ -78,6 +78,28 @@ public class MdmService extends Service {
             mHeartbeatHandler.postDelayed(this, HEARTBEAT_INTERVAL_MS);
         }
     };
+
+    private android.os.PowerManager.WakeLock mWakeLock;
+    private android.net.wifi.WifiManager.WifiLock mWifiLock;
+
+    private void acquireLocks() {
+        try {
+            android.os.PowerManager pm = (android.os.PowerManager) getSystemService(Context.POWER_SERVICE);
+            if (pm != null && (mWakeLock == null || !mWakeLock.isHeld())) {
+                mWakeLock = pm.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "SchoolMDM::ServiceWakeLock");
+                mWakeLock.acquire();
+                Log.d(TAG, "[Lock] PARTIAL_WAKE_LOCK acquired — CPU stays awake during sleep/charging");
+            }
+            android.net.wifi.WifiManager wm = (android.net.wifi.WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+            if (wm != null && (mWifiLock == null || !mWifiLock.isHeld())) {
+                mWifiLock = wm.createWifiLock(android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF, "SchoolMDM::ServiceWifiLock");
+                mWifiLock.acquire();
+                Log.d(TAG, "[Lock] WIFI_MODE_FULL_HIGH_PERF acquired — WiFi stays awake during sleep/charging");
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "[Lock] Lock acquire failed", e);
+        }
+    }
 
     @Override
     public void onCreate() {
@@ -88,6 +110,7 @@ public class MdmService extends Service {
         createNotificationChannel();
         startForeground(1, getNotification());
 
+        acquireLocks();
         connectToServer();
     }
 
@@ -96,11 +119,12 @@ public class MdmService extends Service {
             String savedUrl = getSharedPreferences("MDM_PREFS", MODE_PRIVATE).getString("server_url", SERVER_URL);
             
             IO.Options opts = new IO.Options();
+            opts.transports = new String[]{"websocket"}; // HTTP Polling을 건너뛰고 바로 웹소켓으로 붙어 Cloudflare Rate Limit 우회
             opts.extraHeaders = new java.util.HashMap<>();
             opts.extraHeaders.put("ngrok-skip-browser-warning", java.util.Arrays.asList("true"));
             opts.reconnection = true;
-            opts.reconnectionAttempts = 5;
-            opts.reconnectionDelay = 3000;
+            opts.reconnectionAttempts = 2;
+            opts.reconnectionDelay = 500;
             
             mSocket = IO.socket(savedUrl, opts);
             
@@ -145,8 +169,8 @@ public class MdmService extends Service {
                 public void call(Object... args) {
                     mReconnectAttempts++;
                     Log.w(TAG, "[Socket] 연결 실패 (시도 " + mReconnectAttempts + ")");
-                    if (mReconnectAttempts >= 5) {
-                        // 5회 실패 시 로컬 폴백으로 새 URL 조회 시도
+                    if (mReconnectAttempts >= 2) {
+                        // 2회 실패 시 (단 1초 만에!) 즉시 Gist/로컬에서 새 URL 조회
                         new Thread(() -> fetchTunnelUrlFromLocal()).start();
                         mReconnectAttempts = 0;
                     }
@@ -311,7 +335,10 @@ public class MdmService extends Service {
 
                             Log.d(TAG, "[Config] server-config 수신: mode=" + mode + ", url=" + newUrl);
 
-                            if (newUrl == null || newUrl.isEmpty()) return;
+                            if (newUrl == null || newUrl.isEmpty()) {
+                                Log.w(TAG, "[Config] URL 없음, 무시");
+                                return;
+                            }
 
                             // SharedPreferences에 저장된 URL과 다르면 재연결
                             String savedUrl = getSharedPreferences("MDM_PREFS", MODE_PRIVATE).getString("server_url", "");
@@ -323,6 +350,8 @@ public class MdmService extends Service {
                                     if (mSocket != null) { mSocket.disconnect(); mSocket.off(); }
                                     connectToServer();
                                 }, 1000);
+                            } else {
+                                Log.d(TAG, "[Config] URL 동일, 재연결 불필요");
                             }
                         } catch (Exception e) {
                             Log.e(TAG, "server-config parse error", e);
@@ -338,18 +367,29 @@ public class MdmService extends Service {
                     if (args.length > 0) {
                         try {
                             org.json.JSONObject data = (org.json.JSONObject) args[0];
-                            String apkUrl = data.getString("apkUrl");
+                            String apkUrl = data.optString("apkUrl", "");
+                            String localApkUrl = data.optString("localApkUrl", "");
                             String version = data.optString("version", "");
 
-                            Log.d(TAG, "[APK] 업데이트 수신: url=" + apkUrl + ", version=" + version);
+                            Log.d(TAG, "[APK] 업데이트 수신: local=" + localApkUrl + ", ext=" + apkUrl + ", ver=" + version);
 
-                            // APK 파일 다운로드 후 자동 설치 (기존 installApkSilent 재사용)
+                            // APK 파일 다운로드 후 자동 설치 (로컬 망 1순위 -> 외부망 2순위)
                             new Thread(() -> {
                                 try {
-                                    java.io.File apkFile = downloadApk(apkUrl);
+                                    java.io.File apkFile = null;
+                                    if (!localApkUrl.isEmpty()) {
+                                        Log.d(TAG, "[APK] 로컬 망 다운로드 시도: " + localApkUrl);
+                                        apkFile = downloadApk(localApkUrl);
+                                    }
+                                    if (apkFile == null && !apkUrl.isEmpty()) {
+                                        Log.d(TAG, "[APK] 외부 망 다운로드 폴백 시도: " + apkUrl);
+                                        apkFile = downloadApk(apkUrl);
+                                    }
                                     if (apkFile != null) {
                                         Log.d(TAG, "[APK] 다운로드 완료, 자동 설치 시작: " + apkFile.getAbsolutePath());
                                         installApkSilent(apkFile);
+                                    } else {
+                                        Log.e(TAG, "[APK] 모든 경로 다운로드 실패");
                                     }
                                 } catch (Exception e) {
                                     Log.e(TAG, "[APK] 자동 업데이트 실패", e);
@@ -381,6 +421,8 @@ public class MdmService extends Service {
             device.put("battery", getBatteryLevel());
             device.put("charging", isBatteryCharging());
             device.put("ip", getLocalIpAddress());
+            device.put("appVersionCode", 2);
+            device.put("appVersionName", "1.1");
             mSocket.emit("register", device);
         } catch (Exception e) {
             Log.e(TAG, "Register error", e);
@@ -471,6 +513,7 @@ public class MdmService extends Service {
      * - 기존 /tunnel-url API를 /server-config로 교체하여 모드 정보까지 함께 수신
      */
     private void fetchTunnelUrlFromLocal() {
+        // 1. 로컬 IP(같은 학교 네트워크)의 /server-config API 1순위 빠른 조회 (5ms 반응)
         String[] candidateUrls = {
             "http://" + FALLBACK_LOCAL_IP + ":3010/server-config",
         };
@@ -478,49 +521,73 @@ public class MdmService extends Service {
             try {
                 java.net.URL url = new java.net.URL(apiUrl);
                 java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
-                conn.setConnectTimeout(3000);
-                conn.setReadTimeout(3000);
+                conn.setConnectTimeout(1000);
+                conn.setReadTimeout(1000);
                 int code = conn.getResponseCode();
                 if (code == 200) {
-                    java.io.BufferedReader reader = new java.io.BufferedReader(
-                            new java.io.InputStreamReader(conn.getInputStream()));
+                    java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.InputStreamReader(conn.getInputStream()));
                     StringBuilder sb = new StringBuilder();
                     String line;
                     while ((line = reader.readLine()) != null) sb.append(line);
                     reader.close();
+
                     org.json.JSONObject json = new org.json.JSONObject(sb.toString());
-
+                    String targetUrl = json.optString("url", null);
                     String mode = json.optString("mode", "external");
-                    String serverUrlFromApi = json.optString("url", null);
-                    String localUrl = json.optString("localUrl", null);
 
-                    // 로컬 모드면 로컬 IP로 직접 연결, 외부 모드면 터널 URL 사용
-                    String targetUrl;
-                    if ("local".equals(mode) && localUrl != null && !localUrl.isEmpty()) {
-                        targetUrl = localUrl;
-                    } else if (serverUrlFromApi != null && !serverUrlFromApi.isEmpty()) {
-                        targetUrl = serverUrlFromApi;
-                    } else {
-                        targetUrl = null;
-                    }
-
-                    if (targetUrl != null) {
-                        Log.d(TAG, "[Config] /server-config 조회 성공: mode=" + mode + ", url=" + targetUrl);
-                        getSharedPreferences("MDM_PREFS", MODE_PRIVATE)
-                                .edit().putString("server_url", targetUrl).apply();
+                    String finalUrl = ("local".equals(mode) && json.has("localUrl")) ? json.optString("localUrl") : targetUrl;
+                    if (finalUrl != null && !finalUrl.isEmpty()) {
+                        Log.d(TAG, "[Config] 로컬 /server-config 조회를 통한 초고속 URL 획득: " + finalUrl);
+                        getSharedPreferences("MDM_PREFS", MODE_PRIVATE).edit().putString("server_url", finalUrl).apply();
                         new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
                             if (mSocket != null) { mSocket.disconnect(); mSocket.off(); }
                             connectToServer();
                         });
-                        return;
+                        return; // 성공 시 종료
                     }
                 }
-                conn.disconnect();
             } catch (Exception e) {
-                Log.w(TAG, "[Config] 로컬 폴백 조회 실패: " + apiUrl + " - " + e.getMessage());
+                Log.w(TAG, "[Config] 로컬 /server-config 조회 실패: " + e.getMessage());
             }
         }
-        // 로컬도 실패 시 로컬 IP 직접 소켓 연결 시도
+
+        // 2. 외부망/인터넷만 되는 환경일 때 GitHub Gist 2순위 폴백 조회
+        String gistId = getSharedPreferences("MDM_PREFS", MODE_PRIVATE).getString("gist_id", "be45c5670588da06673ab8bda09d7bb1");
+        if (gistId != null && !gistId.isEmpty() && !gistId.contains("GIST_ID")) {
+            try {
+                java.net.URL url = new java.net.URL("https://api.github.com/gists/" + gistId);
+                java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
+                conn.setConnectTimeout(2000);
+                conn.setRequestProperty("User-Agent", "School-MDM-Android/1.0");
+                if (conn.getResponseCode() == 200) {
+                    java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.InputStreamReader(conn.getInputStream()));
+                    StringBuilder sb = new StringBuilder();
+                    String line;
+                    while ((line = reader.readLine()) != null) sb.append(line);
+                    reader.close();
+                    
+                    org.json.JSONObject json = new org.json.JSONObject(sb.toString());
+                    org.json.JSONObject files = json.getJSONObject("files");
+                    org.json.JSONObject mdmFile = files.getJSONObject("mdm_url.json");
+                    org.json.JSONObject contentJson = new org.json.JSONObject(mdmFile.getString("content"));
+                    String gistUrl = contentJson.getString("url");
+                    
+                    if (gistUrl != null && !gistUrl.isEmpty()) {
+                        Log.d(TAG, "[Gist] Gist에서 최신 외부 URL 획득 성공: " + gistUrl);
+                        getSharedPreferences("MDM_PREFS", MODE_PRIVATE).edit().putString("server_url", gistUrl).apply();
+                        new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
+                            if (mSocket != null) { mSocket.disconnect(); mSocket.off(); }
+                            connectToServer();
+                        });
+                        return; // 성공 시 종료
+                    }
+                }
+            } catch (Exception e) {
+                Log.w(TAG, "[Gist] Gist 조회 실패: " + e.getMessage());
+            }
+        }
+
+        // 3. 로컬도 실패 시 로컬 IP 직접 소켓 연결 시도
         Log.w(TAG, "[Config] 모든 폴백 실패, 로컬 IP 직접 연결 시도");
         new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
             getSharedPreferences("MDM_PREFS", MODE_PRIVATE)
