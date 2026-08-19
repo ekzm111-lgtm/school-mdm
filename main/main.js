@@ -318,7 +318,7 @@ io.on('connection', (socket) => {
     // 등록 즉시 현재 네트워크 모드 & 서버 URL 전달
     socket.emit('server-config', { mode: networkMode, url: getServerUrl(), localUrl: `http://${getLocalIp(true)}:3010` });
 
-    // ⭐ 최신 버전(appVersionCode >= 2)이 뜬 기기는 자동 업데이트 건너뜀!
+    // ⭐ 최신 버전(appVersionCode >= 3)이 뜬 기기는 자동 업데이트 건너뜀!
     const vCode = deviceInfo?.appVersionCode || 1;
     if (latestApkInfo && vCode < 3) {
       const payload = {
@@ -331,6 +331,23 @@ io.on('connection', (socket) => {
     } else if (vCode >= 3) {
       writeLog(`[Auto-Update] 태블릿(${serial})은 이미 최신 버전(v${vCode}) — 건너뜀`);
     }
+
+    // 📊 전체 태블릿 버전을 집계하여 업데이트 현황 보고
+    let updatedCount = 0;
+    let onlineCount = 0;
+    for (const [s, d] of socketDevices.entries()) {
+      if (d.state === 'online') {
+        onlineCount++;
+        if ((d.appVersionCode || 1) >= 3) updatedCount++;
+      }
+    }
+    const updateStatusMsg = `[업데이트 현황] 최신 v1.2 완료: ${updatedCount}대 / 현재 온라인: ${onlineCount}대`;
+    writeLog(updateStatusMsg);
+    mainWindow?.webContents.send('build-progress', { 
+      step: 'deploying', 
+      progress: Math.min(100, Math.round((updatedCount / Math.max(1, onlineCount)) * 100)), 
+      message: updateStatusMsg 
+    });
 
     // ⭐ 추가: 이 기기가 대기 큐에 있으면 온라인 되자마자 즉시 전송
     const queued = distributionQueue.get(serial);
