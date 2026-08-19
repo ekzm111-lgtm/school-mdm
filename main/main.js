@@ -1,4 +1,4 @@
-process.env.UV_THREADPOOL_SIZE = 64;
+process.env.UV_THREADPOOL_SIZE = 128;
 const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('path');
 const http = require('http');
@@ -187,7 +187,14 @@ const expressApp = express();
 expressApp.use(cors());
 const server = http.createServer(expressApp);
 const io = new Server(server, {
-  cors: { origin: "*" }
+  cors: { origin: "*" },
+  // ⭐ 클라이언트와 동일하게 websocket only → Cloudflare HTTP polling 병목 완전 제거
+  transports: ['websocket'],
+  // 끊어진 기기를 빠르게 감지하여 재연결 유도 (기본값 90s → 10s)
+  pingTimeout: 10000,
+  pingInterval: 5000,
+  // 연결 허용 대기시간 (25대 동시 접속 대비)
+  connectTimeout: 10000,
 });
 
 const tabletSockets = new Map(); // serial -> socket instance
@@ -293,7 +300,7 @@ io.on('connection', (socket) => {
 
     // ⭐ 최신 버전(appVersionCode >= 2)이 뜬 기기는 자동 업데이트 건너뜀!
     const vCode = deviceInfo?.appVersionCode || 1;
-    if (latestApkInfo && vCode < 2) {
+    if (latestApkInfo && vCode < 3) {
       const payload = {
         apkUrl: `${getServerUrl()}/apk`,
         localApkUrl: `http://${getLocalIp(true)}:3010/apk`,
@@ -301,7 +308,7 @@ io.on('connection', (socket) => {
       };
       socket.emit('apk-update', payload);
       writeLog(`[Auto-Update] 구버전 태블릿(${serial}, v${vCode})에만 APK 업데이트 전송`);
-    } else if (vCode >= 2) {
+    } else if (vCode >= 3) {
       writeLog(`[Auto-Update] 태블릿(${serial})은 이미 최신 버전(v${vCode}) — 건너뜀`);
     }
 
@@ -954,7 +961,7 @@ ipcMain.handle('build-and-deploy-apk', async () => {
     for (const [serial, socket] of tabletSockets.entries()) {
       const dev = socketDevices.get(serial);
       const vCode = dev?.appVersionCode || 1;
-      if (vCode < 2) {
+      if (vCode < 3) {
         socket.emit('apk-update', latestApkInfo);
         sentCount++;
       } else {
