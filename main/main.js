@@ -291,17 +291,20 @@ function getServerUrl() {
 }
 
 io.on('connection', (socket) => {
-  writeLog(`[Socket] Client connected. SocketID: ${socket.id}, IP: ${socket.handshake.address}`);
+  const connTime = Date.now();
+  writeLog(`[Socket-LatencyTest] ⚡ [1단계 소켓핸드셰이크] 클라이언트 접속됨! ID: ${socket.id}, IP: ${socket.handshake.address}`);
 
   // 태블릿 클라이언트 등록
   socket.on('register', (deviceInfo) => {
+    const regTime = Date.now();
+    const handShakeElapsed = ((regTime - connTime) / 1000).toFixed(2);
     const { serial } = deviceInfo;
     if (!serial) {
       writeLog(`[Socket] Register rejected - missing serial. SocketID: ${socket.id}`);
       return;
     }
     
-    writeLog(`[Socket] Device registered. Serial: ${serial}, Model: ${deviceInfo.model || 'Unknown'}, SocketID: ${socket.id}`);
+    writeLog(`[Socket-LatencyTest] 🎯 [2단계 등록완료] 시리얼: ${serial} (핸드셰이크~등록까지 ${handShakeElapsed}s 소요), SocketID: ${socket.id}`);
     tabletSockets.set(serial, socket);
     
     // 기기 정보 갱신 및 상태 강제 주입
@@ -566,13 +569,25 @@ expressApp.post('/devices/clear-download', async (req, res) => {
 });
 
 expressApp.get('/apk', (req, res) => {
+  const reqTime = Date.now();
+  const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+  writeLog(`[APK-Download-Start] IP: ${clientIp} 요청 수신됨`);
+
   const apkPath = app.isPackaged
     ? path.join(process.resourcesPath, 'resources', 'apk', 'app-debug.apk')
     : path.join(__dirname, '..', 'resources', 'apk', 'app-debug.apk');
 
   if (fs.existsSync(apkPath)) {
-    res.download(apkPath, 'School-MDM-Client.apk');
+    res.download(apkPath, 'School-MDM-Client.apk', (err) => {
+      const elapsed = ((Date.now() - reqTime) / 1000).toFixed(2);
+      if (err) {
+        writeLog(`[APK-Download-Fail] IP: ${clientIp} 다운로드 중단/오류 (${elapsed}s 소요): ${err.message}`);
+      } else {
+        writeLog(`[APK-Download-Success] IP: ${clientIp} APK 다운로드 전송 완료! (${elapsed}s 소요)`);
+      }
+    });
   } else {
+    writeLog(`[APK-Download-Error] IP: ${clientIp} APK 파일 없음 404`);
     res.status(404).send('APK 파일을 찾을 수 없습니다. resources/apk/app-debug.apk 경로를 확인하세요.');
   }
 });
