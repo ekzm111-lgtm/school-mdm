@@ -555,6 +555,27 @@ expressApp.get('/apk', (req, res) => {
   }
 });
 
+// ─── 단일 인스턴스 실행 보장 (중복 실행 시 기존 창으로 포커스) ───────
+const gotTheLock = app.requestSingleInstanceLock();
+if (!gotTheLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+    }
+  });
+}
+
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    writeLog('[Server] ⚠️ 3010 포트가 이미 사용 중입니다. 기존 프로세스의 서버를 유지합니다.');
+  } else {
+    writeLog('[Server] ⚠️ 서버 오류: ' + err.message);
+  }
+});
+
 // Next.js Dev 포트(3000)와 충돌을 피하기 위해 3010 포트 사용
 server.listen(3010, '0.0.0.0', () => {
   console.log('[Socket] MDM Control Server running on port 3010');
