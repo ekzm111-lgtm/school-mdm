@@ -92,8 +92,37 @@ function updateGistUrl(url) {
       req.write(data);
       req.end();
     }
+
+    // ⭐ 구글 앱스 스크립트(GAS) 고정 주소로 실시간 갱신 (무제한 0.1초 연동)
+    updateGasConfig(url);
   } catch (err) {
     writeLog('[Gist] Read config error: ' + err.message);
+  }
+}
+
+const GAS_WEBAPP_URL = 'https://script.google.com/macros/s/AKfycbwGBeRFHYNuGm-zXU7QGOxwq4nKC8EtY0pK4AhQF4QW7IFRgv_7MNBFETom7OTIrvGZeg/exec';
+
+function updateGasConfig(url) {
+  try {
+    const wifiIp = getLocalIp(true);
+    const payload = {
+      url: url,
+      localUrl: `http://${wifiIp}:3010`,
+      wifiIp: wifiIp,
+      mode: networkMode,
+      time: new Date().toISOString()
+    };
+    writeLog('[GAS] 구글 앱스 스크립트 고정 주소 업데이트 전송 중...');
+    fetch(GAS_WEBAPP_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      redirect: 'follow'
+    }).then(res => res.text())
+      .then(text => writeLog('[GAS] 구글 스크립트 업데이트 완전 성공: ' + text.substring(0, 100)))
+      .catch(err => writeLog('[GAS] 구글 스크립트 업데이트 오류: ' + err.message));
+  } catch (err) {
+    writeLog('[GAS] 구글 스크립트 실행 오류: ' + err.message);
   }
 }
 
