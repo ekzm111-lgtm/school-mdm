@@ -167,7 +167,7 @@ function startNgrok() {
   resetCfWatchdog(); // 시작하자마자 워치독 가동
 
   cfProc = spawn(cfBin, [
-    'tunnel', '--url', `http://localhost:${CF_PORT}`, '--no-autoupdate'
+    'tunnel', '--url', `http://127.0.0.1:${CF_PORT}`, '--no-autoupdate'
   ], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
 
   // stdout/stderr 모두 URL 정보가 담길 수 있음
