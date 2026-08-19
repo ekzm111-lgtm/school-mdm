@@ -134,12 +134,30 @@ function resolveCfBin() {
   return process.platform === 'win32' ? 'cloudflared.exe' : 'cloudflared';
 }
 
+// 터널 워치독: URL이 안 오거나 터널이 hang 상태면 강제 재시작
+let cfWatchdogTimer = null;
+
+function resetCfWatchdog() {
+  if (cfWatchdogTimer) clearTimeout(cfWatchdogTimer);
+  // 90초 안에 터널이 URL을 못 보내면 강제 재시작
+  cfWatchdogTimer = setTimeout(() => {
+    writeLog('[CF] ⚠️ 워치독: 터널이 응답 없음 — 강제 재시작');
+    if (cfProc) {
+      try { cfProc.kill('SIGKILL'); } catch(e) {}
+      cfProc = null;
+    }
+    cfTunnelUrl = null;
+    if (!app.isQuitting) startNgrok();
+  }, 90000);
+}
+
 function startNgrok() {
   if (cfProc) return;
   const cfBin = resolveCfBin();
-  console.log('[CF] Cloudflare Tunnel 시작... 바이너리:', cfBin);
+  writeLog('[CF] Cloudflare Tunnel 시작... 바이너리: ' + cfBin);
 
   cfTunnelUrl = null;
+  resetCfWatchdog(); // 시작하자마자 워치독 가동
 
   cfProc = spawn(cfBin, [
     'tunnel', '--url', `http://localhost:${CF_PORT}`, '--no-autoupdate'
@@ -153,7 +171,8 @@ function startNgrok() {
     const match = text.match(/https:\/\/[a-z0-9\-]+\.trycloudflare\.com/);
     if (match && !cfTunnelUrl) {
       cfTunnelUrl = match[0];
-      console.log('[CF] ✅ 터널 URL 감지:', cfTunnelUrl);
+      writeLog('[CF] ✅ 터널 URL 감지: ' + cfTunnelUrl);
+      if (cfWatchdogTimer) clearTimeout(cfWatchdogTimer); // URL 받았으면 워치독 해제
       // 현재 연결된 모든 소켓 기기에게 새 URL 브로드캐스트
       io.emit('tunnel-url-changed', { url: cfTunnelUrl });
       updateGistUrl(cfTunnelUrl);
@@ -164,7 +183,8 @@ function startNgrok() {
   cfProc.stderr.on('data', onData);
 
   cfProc.on('exit', (code) => {
-    console.log('[CF] 프로세스 종료 (code:', code, ') — 5초 후 자동 재시작');
+    writeLog('[CF] 프로세스 종료 (code: ' + code + ') — 5초 후 자동 재시작');
+    if (cfWatchdogTimer) clearTimeout(cfWatchdogTimer);
     cfProc = null;
     cfTunnelUrl = null;
     if (!app.isQuitting) {
