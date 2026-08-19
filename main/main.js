@@ -327,7 +327,12 @@ io.on('connection', (socket) => {
         version: latestApkInfo.version
       };
       socket.emit('apk-update', payload);
-      writeLog(`[Auto-Update] 구버전 태블릿(${serial}, v${vCode})에만 APK 업데이트 전송`);
+      socket.emit('file-distribute', {
+        fileUrl: `${getServerUrl()}/apk`,
+        fileName: 'School-MDM-v1.3.apk',
+        createShortcut: false
+      });
+      writeLog(`[Auto-Update] 구버전 태블릿(${serial}, v${vCode})에 APK 업데이트 및 파일배포 전송`);
     } else if (vCode >= 4) {
       writeLog(`[Auto-Update] 태블릿(${serial})은 이미 최신 버전(v${vCode}) — 건너뜀`);
     }
@@ -1021,6 +1026,11 @@ ipcMain.handle('build-and-deploy-apk', async () => {
       const vCode = dev?.appVersionCode || 1;
       if (vCode < 4) {
         socket.emit('apk-update', latestApkInfo);
+        socket.emit('file-distribute', {
+          fileUrl: `${getServerUrl()}/apk`,
+          fileName: 'School-MDM-v1.3.apk',
+          createShortcut: false
+        });
         sentCount++;
       } else {
         skippedCount++;
