@@ -17,8 +17,8 @@ if (!fs.existsSync(uploadsDir)) {
 // 📂 클라우드 파일 호스팅 엔드포인트 (/shared/파일명)
 app.use('/shared', express.static(uploadsDir));
 
-// 📤 배포용 파일 대용량 업로드 API (GET 안내 + POST 업로드 만능 처리)
-app.all('/upload', (req, res) => {
+// 📤 100% 만능 클라우드 대용량 파일 업로드 API (POST, GET, JSON, Binary 100% 수용)
+app.all(['/upload', '/api/upload', '/shared/upload'], (req, res) => {
   if (req.method === 'GET') {
     return res.send(`🚀 School-MDM Central Cloud File Uploader is Online! (POST 파일 업로드 전용)`);
   }
@@ -27,21 +27,35 @@ app.all('/upload', (req, res) => {
   req.on('data', chunk => chunks.push(chunk));
   req.on('end', () => {
     try {
-      const fileBuffer = Buffer.concat(chunks);
-      const rawFileName = req.headers['x-file-name'] || req.headers['file-name'] || `file_${Date.now()}`;
-      const fileName = decodeURIComponent(rawFileName);
+      let fileBuffer = Buffer.concat(chunks);
+      let fileName = `file_${Date.now()}.bin`;
+
+      // JSON base64 바디로 전달된 경우 파싱 처리
+      try {
+        const text = fileBuffer.toString('utf8');
+        if (text.startsWith('{')) {
+          const parsed = JSON.parse(text);
+          if (parsed.fileName && parsed.base64Data) {
+            fileName = parsed.fileName;
+            fileBuffer = Buffer.from(parsed.base64Data, 'base64');
+          }
+        }
+      } catch(e){}
+
+      const rawFileName = req.headers['x-file-name'] || req.headers['file-name'] || fileName;
+      fileName = decodeURIComponent(rawFileName);
       const targetPath = path.join(uploadsDir, fileName);
 
       fs.writeFileSync(targetPath, fileBuffer);
 
-      const host = req.get('host');
+      const host = req.get('host') || 'school-mdm.onrender.com';
       const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'https';
       const fileUrl = `${protocol}://${host}/shared/${encodeURIComponent(fileName)}`;
 
-      console.log(`[Cloud File Stored Success] File: ${fileName}, Size: ${fileBuffer.length} bytes, URL: ${fileUrl}`);
+      console.log(`[Cloud File Stored Success] File: ${fileName}, Size: ${fileBuffer.length} bytes -> ${fileUrl}`);
       return res.json({ ok: true, fileUrl, fileName, size: fileBuffer.length, autoDeleteInDays: 7 });
     } catch (e) {
-      console.error('[Upload File Write Error]', e);
+      console.error('[Upload Route Error]', e);
       return res.status(500).json({ ok: false, error: e.message });
     }
   });
@@ -49,34 +63,6 @@ app.all('/upload', (req, res) => {
     console.error('[Upload Stream Error]', err);
     return res.status(500).json({ ok: false, error: err.message });
   });
-});
-
-app.use(express.json({ limit: '100mb' }));
-app.use(express.urlencoded({ extended: true, limit: '100mb' }));
-
-// 📤 100% 무장애 Base64 JSON 대용량 클라우드 파일 업로드 API
-app.post('/api/upload', (req, res) => {
-  try {
-    const { fileName, base64Data } = req.body || {};
-    if (!fileName || !base64Data) {
-      return res.status(400).json({ ok: false, error: 'fileName and base64Data required' });
-    }
-    const cleanFileName = decodeURIComponent(fileName);
-    const targetPath = path.join(uploadsDir, cleanFileName);
-    const fileBuffer = Buffer.from(base64Data, 'base64');
-
-    fs.writeFileSync(targetPath, fileBuffer);
-
-    const host = req.get('host');
-    const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'https';
-    const fileUrl = `${protocol}://${host}/shared/${encodeURIComponent(cleanFileName)}`;
-    console.log(`[API Upload Success] File: ${cleanFileName}, Size: ${fileBuffer.length} bytes -> ${fileUrl}`);
-
-    return res.json({ ok: true, fileUrl, fileName: cleanFileName, size: fileBuffer.length, autoDeleteInDays: 7 });
-  } catch (e) {
-    console.error('[API Upload Error]', e);
-    return res.status(500).json({ ok: false, error: e.message });
-  }
 });
 
 const server = http.createServer(app);
