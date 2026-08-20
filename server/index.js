@@ -99,7 +99,23 @@ app.get('/', (req, res) => {
 });
 
 app.get('/devices', (req, res) => {
-  res.json(Array.from(socketDevices.values()));
+  const devs = Array.from(socketDevices.values()).filter(d => d.serial !== 'TEST-DEVICE-001' && d.serial?.toLowerCase() !== 'test-device-001');
+  res.json(devs);
+});
+
+// 🗑️ 더미 기기 및 특정 기기 삭제 REST API
+app.delete('/devices/:serial', (req, res) => {
+  const serial = req.params.serial;
+  const lowerKey = (serial || '').toLowerCase().trim();
+  socketDevices.delete(lowerKey);
+  tabletSockets.delete(lowerKey);
+  if (lowerKey === 'test-device-001') {
+    socketDevices.delete('TEST-DEVICE-001');
+  }
+  const remaining = Array.from(socketDevices.values()).filter(d => d.serial !== 'TEST-DEVICE-001' && d.serial?.toLowerCase() !== 'test-device-001');
+  io.to('admin-room').emit('device-update', remaining);
+  io.emit('device-update', remaining);
+  res.json({ ok: true, serial });
 });
 
 // 소켓 찾기 도우미 (대소문자 무관 검색)
