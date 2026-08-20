@@ -27,7 +27,6 @@ function cleanupOldSharedFiles() {
     for (const file of files) {
       const filePath = path.join(uploadsDir, file);
       const stats = fs.statSync(filePath);
-      // 생성/수정 시간이 7일(일주일)을 초과한 경우 자동 삭제
       if (now - stats.mtimeMs > SEVEN_DAYS_MS) {
         fs.unlinkSync(filePath);
         deletedCount++;
@@ -42,9 +41,7 @@ function cleanupOldSharedFiles() {
   }
 }
 
-// 1시간마다 7일 이상 된 파일 자동 청소 스케줄러 실행
 setInterval(cleanupOldSharedFiles, 60 * 60 * 1000);
-// 서버 구동 즉시 1회 실행
 cleanupOldSharedFiles();
 
 // 📂 클라우드 파일 호스팅 엔드포인트 (/shared/파일명)
@@ -95,9 +92,10 @@ setInterval(() => {
   http.get(`http://127.0.0.1:${PORT}/`, () => {}).on('error', () => {});
 }, 4 * 60 * 1000);
 
-// 헬스체크 및 0.001초 기기 목록 일괄 수신 REST API
+// ⭐ 헬스체크 REST API (실제 🟢 온라인 기기 수치 100% 일치 정밀 보정!)
 app.get('/', (req, res) => {
-  res.send(`🚀 School-MDM Central Cloud State Store is Running! Online Tablets: ${socketDevices.size}`);
+  const realOnlineCount = Array.from(socketDevices.values()).filter(x => x.state === 'online').length;
+  res.send(`🚀 School-MDM Central Cloud State Store is Running! Online Tablets: ${realOnlineCount}`);
 });
 
 app.get('/devices', (req, res) => {
@@ -209,7 +207,7 @@ io.on('connection', (socket) => {
     io.to('admin-room').emit('device-update', Array.from(socketDevices.values()));
   });
 
-  // ⭐ 관리자 ➡️ 태블릿 모든 제어 명령 릴레이
+  // ⭐ 관리자 ➡️ 태블릿 모든 제어 명령 릴레이 (오프라인 상태 기기도 클라우드 메모리상 해제 100% 반영!)
   socket.on('control-command', ({ serial, command, payload }) => {
     console.log(`[Control Command Relay] Command: '${command}' -> Target Serial: '${serial}'`, payload);
 
@@ -219,7 +217,14 @@ io.on('connection', (socket) => {
       if (command === 'lock') {
         socket.emit('device-lock', payload);
         io.emit('device-lock', payload);
+        for (const [k, d] of socketDevices.entries()) socketDevices.set(k, { ...d, locked: true });
       }
+      if (command === 'unlock') {
+        socket.emit('device-unlock', payload);
+        io.emit('device-unlock', payload);
+        for (const [k, d] of socketDevices.entries()) socketDevices.set(k, { ...d, locked: false });
+      }
+      io.to('admin-room').emit('device-update', Array.from(socketDevices.values()));
       return;
     }
     
