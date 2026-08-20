@@ -100,6 +100,35 @@ app.get('/devices', (req, res) => {
   res.json(getCleanDevices());
 });
 
+// ⚡ 소켓 연결이 차단되어도 100% 동작하는 REST HTTP 명령 릴레이 API
+app.post('/api/command', express.json(), (req, res) => {
+  try {
+    const { serial, command, payload } = req.body || {};
+    console.log(`[HTTP Command Relay] Command: '${command}' -> Serial: '${serial}'`, payload);
+
+    const fullPayload = {
+      ...(payload || {}),
+      serial,
+      targetSerial: serial,
+      targetSerials: Array.isArray(serial) ? serial : [serial]
+    };
+
+    io.emit(command, fullPayload);
+    if (command === 'file-distribute' || command === 'distribute-file' || command === 'file_distribute') {
+      io.emit('file-distribute', fullPayload);
+      io.emit('distribute-file', fullPayload);
+      io.emit('distribute_file', fullPayload);
+      io.emit('file_distribute', fullPayload);
+      io.emit('download-file', fullPayload);
+    }
+
+    return res.json({ ok: true, command, serial });
+  } catch (e) {
+    console.error('[HTTP Command Relay Error]', e);
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // 🗑️ 더미 기기 및 특정 기기 삭제 REST API
 app.delete('/devices/:serial', (req, res) => {
   const serial = req.params.serial;
