@@ -12,6 +12,7 @@ const server = http.createServer(app);
 const io = new Server(server, {
   cors: { origin: "*" },
   transports: ['polling', 'websocket'],
+  allowEIO3: true, // ⭐ 안드로이드 구버전/신버전 Socket.IO SDK 100% 호환 접속 허용!
   pingTimeout: 60000,
   pingInterval: 25000,
   connectTimeout: 60000,
@@ -24,6 +25,11 @@ const tabletSockets = new Map(); // serial -> socket
 const socketDevices = new Map(); // serial -> deviceInfo
 const disconnectTimers = new Map(); // serial -> timer
 
+// Render 서버 셀프 핑 (24시간 자동 수면 방지 Keep-Alive)
+setInterval(() => {
+  http.get(`http://127.0.0.1:${PORT}/`, () => {}).on('error', () => {});
+}, 4 * 60 * 1000); // 4분마다 셀프 핑으로 수면 방지
+
 // 헬스체크 및 0.001초 기기 목록 일괄 수신 REST API
 app.get('/', (req, res) => {
   res.send(`🚀 School-MDM Central Cloud State Store is Running! Online Tablets: ${socketDevices.size}`);
@@ -35,7 +41,7 @@ app.get('/devices', (req, res) => {
 
 // Socket.IO 양방향 중계 및 상시 보관 로직
 io.on('connection', (socket) => {
-  console.log(`[Socket Connected] ID: ${socket.id}, IP: ${socket.handshake.address}`);
+  console.log(`[Socket Connected] ID: ${socket.id}, IP: ${socket.handshake.address}, Query: ${JSON.stringify(socket.handshake.query)}`);
 
   // 관리자 포터블 프로그램 접속 시 24시간 상시 보관된 26대 상태 0.001초 일괄 전송!
   socket.on('admin-connect', () => {
@@ -48,7 +54,10 @@ io.on('connection', (socket) => {
   // 태블릿 24시간 상시 등록 및 상태 자동 최신화
   socket.on('register', (deviceInfo) => {
     const { serial } = deviceInfo || {};
-    if (!serial) return;
+    if (!serial) {
+      console.log(`[Register Rejected] Serial missing in payload:`, deviceInfo);
+      return;
+    }
 
     if (disconnectTimers.has(serial)) {
       clearTimeout(disconnectTimers.get(serial));
