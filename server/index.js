@@ -92,15 +92,18 @@ setInterval(() => {
   http.get(`http://127.0.0.1:${PORT}/`, () => {}).on('error', () => {});
 }, 4 * 60 * 1000);
 
+function getCleanDevices() {
+  return Array.from(socketDevices.values()).filter(d => d.serial !== 'TEST-DEVICE-001' && d.serial?.toLowerCase() !== 'test-device-001');
+}
+
 // ⭐ 헬스체크 REST API (실제 🟢 온라인 기기 수치 100% 일치 정밀 보정!)
 app.get('/', (req, res) => {
-  const realOnlineCount = Array.from(socketDevices.values()).filter(x => x.state === 'online').length;
+  const realOnlineCount = getCleanDevices().filter(x => x.state === 'online').length;
   res.send(`🚀 School-MDM Central Cloud State Store is Running! Online Tablets: ${realOnlineCount}`);
 });
 
 app.get('/devices', (req, res) => {
-  const devs = Array.from(socketDevices.values()).filter(d => d.serial !== 'TEST-DEVICE-001' && d.serial?.toLowerCase() !== 'test-device-001');
-  res.json(devs);
+  res.json(getCleanDevices());
 });
 
 // 🗑️ 더미 기기 및 특정 기기 삭제 REST API
@@ -108,11 +111,10 @@ app.delete('/devices/:serial', (req, res) => {
   const serial = req.params.serial;
   const lowerKey = (serial || '').toLowerCase().trim();
   socketDevices.delete(lowerKey);
+  socketDevices.delete('TEST-DEVICE-001');
+  socketDevices.delete('test-device-001');
   tabletSockets.delete(lowerKey);
-  if (lowerKey === 'test-device-001') {
-    socketDevices.delete('TEST-DEVICE-001');
-  }
-  const remaining = Array.from(socketDevices.values()).filter(d => d.serial !== 'TEST-DEVICE-001' && d.serial?.toLowerCase() !== 'test-device-001');
+  const remaining = getCleanDevices();
   io.to('admin-room').emit('device-update', remaining);
   io.emit('device-update', remaining);
   res.json({ ok: true, serial });
@@ -155,16 +157,16 @@ io.on('connection', (socket) => {
         lastSeen: new Date().toISOString()
       };
       socketDevices.set(lowerKey, dev);
-      io.to('admin-room').emit('device-update', Array.from(socketDevices.values()));
+      io.to('admin-room').emit('device-update', getCleanDevices());
     }
   });
 
   // 관리자 포터블 프로그램 접속 시 24시간 상시 보관된 26대 상태 0.001초 일괄 전송!
   socket.on('admin-connect', () => {
     socket.join('admin-room');
-    console.log(`[Admin Connected] SocketID: ${socket.id} — Sending cached devices immediately (${socketDevices.size} devs)!`);
-    const allDevices = Array.from(socketDevices.values());
-    socket.emit('device-update', allDevices);
+    const cleanDevs = getCleanDevices();
+    console.log(`[Admin Connected] SocketID: ${socket.id} — Sending cached devices immediately (${cleanDevs.length} devs)!`);
+    socket.emit('device-update', cleanDevs);
   });
 
   // 태블릿 24시간 상시 등록
@@ -172,7 +174,7 @@ io.on('connection', (socket) => {
     let parsed = deviceInfo;
     if (typeof deviceInfo === 'string') parsed = tryParseJson(deviceInfo) || { serial: deviceInfo };
     const { serial } = parsed || {};
-    if (!serial) return;
+    if (!serial || serial === 'TEST-DEVICE-001' || serial.toLowerCase() === 'test-device-001') return;
 
     const lowerKey = serial.toLowerCase().trim();
     if (disconnectTimers.has(lowerKey)) {
