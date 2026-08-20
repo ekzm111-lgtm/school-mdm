@@ -47,22 +47,36 @@ cleanupOldSharedFiles();
 // 📂 클라우드 파일 호스팅 엔드포인트 (/shared/파일명)
 app.use('/shared', express.static(uploadsDir));
 
-// 📤 관리자 포터블 앱에서 배포용 파일 대용량 업로드 API
-app.post('/upload', express.raw({ type: '*/*', limit: '100mb' }), (req, res) => {
-  const rawFileName = req.headers['x-file-name'] || req.headers['X-File-Name'] || req.headers['file-name'] || `file_${Date.now()}`;
-  const fileName = decodeURIComponent(rawFileName);
-  const targetPath = path.join(uploadsDir, fileName);
+// 📤 관리자 포터블 앱에서 배포용 파일 대용량 업로드 API (100% 무장애 스트림 수집)
+app.post('/upload', (req, res) => {
+  const chunks = [];
+  req.on('data', chunk => chunks.push(chunk));
+  req.on('end', () => {
+    try {
+      const fileBuffer = Buffer.concat(chunks);
+      const rawFileName = req.headers['x-file-name'] || req.headers['file-name'] || `file_${Date.now()}`;
+      const fileName = decodeURIComponent(rawFileName);
+      const targetPath = path.join(uploadsDir, fileName);
 
-  fs.writeFile(targetPath, req.body, (err) => {
-    if (err) {
-      console.error('[Upload Error]', err);
-      return res.status(500).json({ ok: false, error: err.message });
+      fs.writeFile(targetPath, fileBuffer, (err) => {
+        if (err) {
+          console.error('[Upload File Write Error]', err);
+          return res.status(500).json({ ok: false, error: err.message });
+        }
+        const host = req.get('host');
+        const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'https';
+        const fileUrl = `${protocol}://${host}/shared/${encodeURIComponent(fileName)}`;
+        console.log(`[Cloud File Stored Success] File: ${fileName}, Size: ${fileBuffer.length} bytes, URL: ${fileUrl}`);
+        res.json({ ok: true, fileUrl, fileName, size: fileBuffer.length, autoDeleteInDays: 7 });
+      });
+    } catch (e) {
+      console.error('[Upload Parse Error]', e);
+      res.status(500).json({ ok: false, error: e.message });
     }
-    const host = req.get('host');
-    const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'https';
-    const fileUrl = `${protocol}://${host}/shared/${encodeURIComponent(fileName)}`;
-    console.log(`[Cloud File Stored] File: ${fileName}, Public URL: ${fileUrl} (7일 후 자동 삭제 예정)`);
-    res.json({ ok: true, fileUrl, fileName, autoDeleteInDays: 7 });
+  });
+  req.on('error', (err) => {
+    console.error('[Upload Stream Error]', err);
+    res.status(500).json({ ok: false, error: err.message });
   });
 });
 
