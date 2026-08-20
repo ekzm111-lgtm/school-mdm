@@ -51,7 +51,33 @@ app.all('/upload', (req, res) => {
   });
 });
 
-app.use(express.json());
+app.use(express.json({ limit: '100mb' }));
+app.use(express.urlencoded({ extended: true, limit: '100mb' }));
+
+// 📤 100% 무장애 Base64 JSON 대용량 클라우드 파일 업로드 API
+app.post('/api/upload', (req, res) => {
+  try {
+    const { fileName, base64Data } = req.body || {};
+    if (!fileName || !base64Data) {
+      return res.status(400).json({ ok: false, error: 'fileName and base64Data required' });
+    }
+    const cleanFileName = decodeURIComponent(fileName);
+    const targetPath = path.join(uploadsDir, cleanFileName);
+    const fileBuffer = Buffer.from(base64Data, 'base64');
+
+    fs.writeFileSync(targetPath, fileBuffer);
+
+    const host = req.get('host');
+    const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'https';
+    const fileUrl = `${protocol}://${host}/shared/${encodeURIComponent(cleanFileName)}`;
+    console.log(`[API Upload Success] File: ${cleanFileName}, Size: ${fileBuffer.length} bytes -> ${fileUrl}`);
+
+    return res.json({ ok: true, fileUrl, fileName: cleanFileName, size: fileBuffer.length, autoDeleteInDays: 7 });
+  } catch (e) {
+    console.error('[API Upload Error]', e);
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+});
 
 const server = http.createServer(app);
 
