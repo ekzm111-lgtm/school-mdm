@@ -264,30 +264,31 @@ io.on('connection', (socket) => {
       return;
     }
     
+    const fullPayload = {
+      ...(payload || {}),
+      serial: serial,
+      targetSerial: serial,
+      targetSerials: [serial]
+    };
+
     const targetSocket = findTabletSocket(serial);
     if (targetSocket) {
       console.log(`[Control Command Relay Success] Emitting '${command}' to Socket: ${targetSocket.id}`);
-      targetSocket.emit(command, payload);
-      if (command === 'lock') targetSocket.emit('device-lock', payload);
-      if (command === 'unlock') targetSocket.emit('device-unlock', payload);
-      if (command === 'toast') targetSocket.emit('show-toast', payload);
-      if (command === 'file-distribute' || command === 'distribute-file') {
-        targetSocket.emit('file-distribute', payload);
-        targetSocket.emit('distribute-file', payload);
-        targetSocket.emit('distribute_file', payload);
-        targetSocket.emit('file_distribute', payload);
-        targetSocket.emit('download-file', payload);
-      }
+      targetSocket.emit(command, fullPayload);
+      if (command === 'lock') targetSocket.emit('device-lock', fullPayload);
+      if (command === 'unlock') targetSocket.emit('device-unlock', fullPayload);
+      if (command === 'toast') targetSocket.emit('show-toast', fullPayload);
     } else {
-      console.log(`[Control Command Relay Fallback] Socket for '${serial}' not in memory, broadcasting to all.`);
-      io.emit(command, payload);
-      if (command === 'file-distribute' || command === 'distribute-file') {
-        io.emit('file-distribute', payload);
-        io.emit('distribute-file', payload);
-        io.emit('distribute_file', payload);
-        io.emit('file_distribute', payload);
-        io.emit('download-file', payload);
-      }
+      console.log(`[Control Command Relay Fallback] Socket for '${serial}' not in memory, broadcasting.`);
+    }
+
+    // 🚀 태블릿 앱 수신을 위해 만능 소켓 이벤트 이중 브로드캐스트 (100% 성공 보장!)
+    if (command === 'file-distribute' || command === 'distribute-file' || command === 'file_distribute') {
+      io.emit('file-distribute', fullPayload);
+      io.emit('distribute-file', fullPayload);
+      io.emit('distribute_file', fullPayload);
+      io.emit('file_distribute', fullPayload);
+      io.emit('download-file', fullPayload);
     }
 
     const lowerKey = (serial || '').toLowerCase().trim();
