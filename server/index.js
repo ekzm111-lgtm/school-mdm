@@ -16,7 +16,7 @@ const io = new Server(server, {
     origin: "*",
     methods: ["GET", "POST"]
   },
-  allowEIO3: true, // 필수: 구버전 안드로이드 EIO=3 프로토콜 호환 허용
+  allowEIO3: true,
   transports: ['polling', 'websocket'],
   pingTimeout: 60000,
   pingInterval: 25000,
@@ -47,17 +47,44 @@ app.get('/devices', (req, res) => {
 io.on('connection', (socket) => {
   console.log(`[Socket Connected] ID: ${socket.id}, IP: ${socket.handshake.address}`);
 
+  // ⭐ 태블릿이 전송하는 모든 이벤트 감지 (이벤트명/페이로드 불일치 방지 만능 로거)
+  socket.onAny((eventName, ...args) => {
+    if (eventName === 'admin-connect' || eventName === 'mirror-frame') return;
+    console.log(`[ANY EVENT] ID: ${socket.id} -> Event: '${eventName}', Args:`, JSON.stringify(args).substring(0, 150));
+
+    // 만약 이벤트 파라미터 중 시리얼 번호나 기기 정보가 들어있으면 자동 기기 등록 처리
+    const payload = args[0];
+    const deviceInfo = typeof payload === 'string' ? (tryParseJson(payload) || { serial: payload }) : payload;
+    const serial = deviceInfo?.serial || deviceInfo?.mac || deviceInfo?.deviceId || (eventName !== 'heartbeat' && eventName !== 'register' ? null : null);
+    
+    if (serial && !socketDevices.has(serial)) {
+      tabletSockets.set(serial, socket);
+      const dev = {
+        ...deviceInfo,
+        serial,
+        state: 'online',
+        socketId: socket.id,
+        lastSeen: new Date().toISOString()
+      };
+      socketDevices.set(serial, dev);
+      console.log(`[Auto Registered via onAny] Serial: ${serial}`);
+      io.to('admin-room').emit('device-update', Array.from(socketDevices.values()));
+    }
+  });
+
   // 관리자 포터블 프로그램 접속 시 24시간 상시 보관된 26대 상태 0.001초 일괄 전송!
   socket.on('admin-connect', () => {
     socket.join('admin-room');
-    console.log(`[Admin Connected] SocketID: ${socket.id} — Sending cached devices immediately!`);
+    console.log(`[Admin Connected] SocketID: ${socket.id} — Sending cached devices immediately (${socketDevices.size} devs)!`);
     const allDevices = Array.from(socketDevices.values());
     socket.emit('device-update', allDevices);
   });
 
   // 태블릿 24시간 상시 등록 및 상태 자동 최신화
   socket.on('register', (deviceInfo) => {
-    const { serial } = deviceInfo || {};
+    let parsed = deviceInfo;
+    if (typeof deviceInfo === 'string') parsed = tryParseJson(deviceInfo) || { serial: deviceInfo };
+    const { serial } = parsed || {};
     if (!serial) {
       console.log(`[Register Rejected] Serial missing:`, deviceInfo);
       return;
@@ -73,7 +100,7 @@ io.on('connection', (socket) => {
     const existing = socketDevices.get(serial) || {};
     const updatedDev = {
       ...existing,
-      ...deviceInfo,
+      ...parsed,
       serial,
       state: 'online',
       socketId: socket.id,
@@ -83,15 +110,16 @@ io.on('connection', (socket) => {
 
     console.log(`[Cloud Store Updated] Tablet Registered: ${serial} (Total Online: ${socketDevices.size})`);
 
-    // 관리자 포터블 앱 대시보드로 0ms 즉시 전송
     const allDevs = Array.from(socketDevices.values());
     io.to('admin-room').emit('device-update', allDevs);
     io.emit('device-update', allDevs);
   });
 
-  // 태블릿 24시간 상시 하트비트 수신 (배터리/IP/충전상태 상시 갱신)
+  // 태블릿 24시간 상시 하트비트 수신
   socket.on('heartbeat', (data) => {
-    const { serial, battery, charging, ip } = data || {};
+    let parsed = data;
+    if (typeof data === 'string') parsed = tryParseJson(data) || {};
+    const { serial, battery, charging, ip } = parsed || {};
     if (!serial) return;
     const existing = socketDevices.get(serial);
     if (!existing) return;
@@ -105,15 +133,13 @@ io.on('connection', (socket) => {
     };
     socketDevices.set(serial, updated);
 
-    // 관리자 포터블 앱 대시보드로 갱신 전송
     io.to('admin-room').emit('device-update', Array.from(socketDevices.values()));
   });
 
-  // 관리자 포터블 앱 ➡️ 특정 태블릿 제어 명령 릴레이 (lock, unlock, kiosk, exit_kiosk, volume 등)
+  // 관리자 제어 명령 릴레이
   socket.on('control-command', ({ serial, command, payload }) => {
     console.log(`[Control Command] Relay '${command}' to ${serial}`);
     
-    // 로컬 메모리 상태 즉시 반영 (낙관적 UI)
     const existing = socketDevices.get(serial);
     if (existing) {
       if (command === 'lock') existing.locked = true;
@@ -157,6 +183,10 @@ io.on('connection', (socket) => {
     }
   });
 });
+
+function tryParseJson(str) {
+  try { return JSON.parse(str); } catch(e) { return null; }
+}
 
 server.listen(PORT, () => {
   console.log(`[Cloud Central Store] Server running on port ${PORT}`);
