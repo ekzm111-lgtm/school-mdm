@@ -265,8 +265,10 @@ io.on('connection', (socket) => {
       if (command === 'unlock') existing.locked = false;
       if (command === 'kiosk') existing.kioskApp = payload?.packageName;
       if (command === 'exit_kiosk') existing.kioskApp = null;
+      if (command === 'set_alias') existing.alias = payload?.alias;
+      if (command === 'set_group') existing.group = payload?.group;
       socketDevices.set(lowerKey, existing);
-      io.to('admin-room').emit('device-update', Array.from(socketDevices.values()));
+      io.to('admin-room').emit('device-update', getCleanDevices());
     }
   });
 
