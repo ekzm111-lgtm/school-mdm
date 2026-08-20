@@ -1,6 +1,8 @@
 const http = require('http');
 const express = require('express');
 const cors = require('cors');
+const path = require('path');
+const fs = require('fs');
 const { Server } = require('socket.io');
 
 const app = express();
@@ -8,6 +10,33 @@ app.use(cors());
 app.use(express.json());
 
 const PORT = process.env.PORT || 10000;
+const uploadsDir = path.join(__dirname, 'uploads');
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+}
+
+// 📂 클라우드 파일 호스팅 엔드포인트 (/shared/파일명)
+app.use('/shared', express.static(uploadsDir));
+
+// 📤 관리자 포터블 앱에서 배포용 파일 대용량 업로드 API
+app.post('/upload', express.raw({ type: '*/*', limit: '100mb' }), (req, res) => {
+  const rawFileName = req.headers['x-file-name'] || `file_${Date.now()}`;
+  const fileName = decodeURIComponent(rawFileName);
+  const targetPath = path.join(uploadsDir, fileName);
+
+  fs.writeFile(targetPath, req.body, (err) => {
+    if (err) {
+      console.error('[Upload Error]', err);
+      return res.status(500).json({ ok: false, error: err.message });
+    }
+    const host = req.get('host');
+    const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'https';
+    const fileUrl = `${protocol}://${host}/shared/${encodeURIComponent(fileName)}`;
+    console.log(`[Cloud File Stored] File: ${fileName}, Public URL: ${fileUrl}`);
+    res.json({ ok: true, fileUrl, fileName });
+  });
+});
+
 const server = http.createServer(app);
 
 // ⭐ EIO=3 (구버전 안드로이드 Socket.IO SDK) & EIO=4 (신버전) 100% 수용 설정
@@ -47,15 +76,13 @@ app.get('/devices', (req, res) => {
 io.on('connection', (socket) => {
   console.log(`[Socket Connected] ID: ${socket.id}, IP: ${socket.handshake.address}`);
 
-  // ⭐ 태블릿이 전송하는 모든 이벤트 감지 (이벤트명/페이로드 불일치 방지 만능 로거)
+  // 태블릿이 전송하는 모든 이벤트 감지 (만능 트래커)
   socket.onAny((eventName, ...args) => {
     if (eventName === 'admin-connect' || eventName === 'mirror-frame') return;
-    console.log(`[ANY EVENT] ID: ${socket.id} -> Event: '${eventName}', Args:`, JSON.stringify(args).substring(0, 150));
 
-    // 만약 이벤트 파라미터 중 시리얼 번호나 기기 정보가 들어있으면 자동 기기 등록 처리
     const payload = args[0];
     const deviceInfo = typeof payload === 'string' ? (tryParseJson(payload) || { serial: payload }) : payload;
-    const serial = deviceInfo?.serial || deviceInfo?.mac || deviceInfo?.deviceId || (eventName !== 'heartbeat' && eventName !== 'register' ? null : null);
+    const serial = deviceInfo?.serial || deviceInfo?.mac || deviceInfo?.deviceId;
     
     if (serial && !socketDevices.has(serial)) {
       tabletSockets.set(serial, socket);
@@ -67,7 +94,6 @@ io.on('connection', (socket) => {
         lastSeen: new Date().toISOString()
       };
       socketDevices.set(serial, dev);
-      console.log(`[Auto Registered via onAny] Serial: ${serial}`);
       io.to('admin-room').emit('device-update', Array.from(socketDevices.values()));
     }
   });
@@ -85,10 +111,7 @@ io.on('connection', (socket) => {
     let parsed = deviceInfo;
     if (typeof deviceInfo === 'string') parsed = tryParseJson(deviceInfo) || { serial: deviceInfo };
     const { serial } = parsed || {};
-    if (!serial) {
-      console.log(`[Register Rejected] Serial missing:`, deviceInfo);
-      return;
-    }
+    if (!serial) return;
 
     if (disconnectTimers.has(serial)) {
       clearTimeout(disconnectTimers.get(serial));
@@ -136,9 +159,9 @@ io.on('connection', (socket) => {
     io.to('admin-room').emit('device-update', Array.from(socketDevices.values()));
   });
 
-  // 관리자 제어 명령 릴레이
+  // 관리자 ➡️ 태블릿 제어 및 파일 배포 릴레이 명령
   socket.on('control-command', ({ serial, command, payload }) => {
-    console.log(`[Control Command] Relay '${command}' to ${serial}`);
+    console.log(`[Control Command] Relay '${command}' to ${serial}`, payload);
     
     const existing = socketDevices.get(serial);
     if (existing) {
@@ -154,6 +177,12 @@ io.on('connection', (socket) => {
     if (targetSocket) {
       targetSocket.emit(command, payload);
     }
+  });
+
+  // 전체 태블릿 브로드캐스트 파일 배포 명령
+  socket.on('broadcast-file-distribute', (payload) => {
+    console.log('[Broadcast File Distribute]', payload);
+    io.emit('file-distribute', payload);
   });
 
   // 미러링 프레임 릴레이
