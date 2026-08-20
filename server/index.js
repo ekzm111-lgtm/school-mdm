@@ -184,27 +184,28 @@ io.on('connection', (socket) => {
     }
   });
 
-  // 📤 24시간 클라우드 파일 소켓 직접 업로드 (HTTP 404 완벽 우회 100% 무장애 방식)
-  socket.on('upload-file', (data, callback) => {
+  // 📤 24시간 클라우드 파일 소켓 직접 업로드 (100% 무장애 방식)
+  socket.on('upload-file', (data, ack) => {
     try {
       const { fileName, base64Data } = data || {};
       if (!fileName || !base64Data) {
-        if (typeof callback === 'function') callback({ ok: false, error: 'invalid payload' });
+        if (typeof ack === 'function') ack({ ok: false, error: 'invalid payload' });
         return;
       }
-      const targetPath = path.join(uploadsDir, fileName);
+      const cleanName = decodeURIComponent(fileName);
+      const targetPath = path.join(uploadsDir, cleanName);
       const buffer = Buffer.from(base64Data, 'base64');
       fs.writeFileSync(targetPath, buffer);
 
-      const fileUrl = `https://school-mdm.onrender.com/shared/${encodeURIComponent(fileName)}`;
-      console.log(`[Socket Upload Success] File: ${fileName}, Size: ${buffer.length} bytes -> ${fileUrl}`);
+      const fileUrl = `https://school-mdm.onrender.com/shared/${encodeURIComponent(cleanName)}`;
+      console.log(`[Socket Upload Success] File: ${cleanName}, Size: ${buffer.length} bytes -> ${fileUrl}`);
 
-      const result = { ok: true, fileUrl, fileName, size: buffer.length };
-      if (typeof callback === 'function') callback(result);
+      const result = { ok: true, fileUrl, fileName: cleanName, size: buffer.length };
+      if (typeof ack === 'function') ack(result);
       socket.emit('upload-file-result', result);
     } catch (e) {
       console.error('[Socket Upload Error]', e);
-      if (typeof callback === 'function') callback({ ok: false, error: e.message });
+      if (typeof ack === 'function') ack({ ok: false, error: e.message });
     }
   });
 
