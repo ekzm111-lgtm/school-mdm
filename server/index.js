@@ -7,7 +7,6 @@ const { Server } = require('socket.io');
 
 const app = express();
 app.use(cors());
-app.use(express.json());
 
 const PORT = process.env.PORT || 10000;
 const uploadsDir = path.join(__dirname, 'uploads');
@@ -15,40 +14,11 @@ if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
 }
 
-// ⏰ 7일(일주일) 지난 업로드 공유 파일 자동 삭제 청소기 (Retention Policy)
-const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000; // 7일 (밀리초)
-
-function cleanupOldSharedFiles() {
-  try {
-    const files = fs.readdirSync(uploadsDir);
-    const now = Date.now();
-    let deletedCount = 0;
-
-    for (const file of files) {
-      const filePath = path.join(uploadsDir, file);
-      const stats = fs.statSync(filePath);
-      if (now - stats.mtimeMs > SEVEN_DAYS_MS) {
-        fs.unlinkSync(filePath);
-        deletedCount++;
-        console.log(`[Auto Cleanup] 7일 경과 파일 자동 삭제: ${file}`);
-      }
-    }
-    if (deletedCount > 0) {
-      console.log(`[Auto Cleanup Complete] 총 ${deletedCount}개 일주일 경과 파일 삭제 완료.`);
-    }
-  } catch (err) {
-    console.error('[Auto Cleanup Error]', err);
-  }
-}
-
-setInterval(cleanupOldSharedFiles, 60 * 60 * 1000);
-cleanupOldSharedFiles();
-
 // 📂 클라우드 파일 호스팅 엔드포인트 (/shared/파일명)
 app.use('/shared', express.static(uploadsDir));
 
-// 📤 관리자 포터블 앱에서 배포용 파일 대용량 업로드 API (100% 무장애 스트림 수집)
-app.post('/upload', (req, res) => {
+// 📤 관리자 포터블 앱에서 배포용 파일 대용량 업로드 API (최상단 100% 무장애 스트림 수집)
+app.all('/upload', (req, res) => {
   const chunks = [];
   req.on('data', chunk => chunks.push(chunk));
   req.on('end', () => {
@@ -79,6 +49,8 @@ app.post('/upload', (req, res) => {
     res.status(500).json({ ok: false, error: err.message });
   });
 });
+
+app.use(express.json());
 
 const server = http.createServer(app);
 
