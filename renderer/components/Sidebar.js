@@ -72,6 +72,32 @@ export default function Sidebar({ activeTab, onTabChange, stats }) {
           <span style={{ fontSize: 13, color: '#e2e8f0', fontWeight: 500 }}>오프라인 {stats.offline}대</span>
         </div>
         <div style={{ fontSize: 10, color: '#64748b', marginTop: 2, fontFamily: 'var(--mono)' }}>v1.0.0</div>
+        <a 
+          href="https://school-mdm.onrender.com/"
+          target="_blank"
+          rel="noreferrer"
+          style={{
+            marginTop: 4,
+            padding: '6px 8px',
+            background: 'rgba(99, 102, 241, 0.15)',
+            border: '1px solid rgba(99, 102, 241, 0.3)',
+            borderRadius: 6,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            color: '#a5b4fc',
+            fontSize: 10.5,
+            textDecoration: 'none',
+            fontWeight: 600,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap'
+          }}
+          title="클릭하여 24시간 클라우드 서버 웹페이지 열기"
+        >
+          <span>🌐</span>
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>school-mdm.onrender.com</span>
+        </a>
       </div>
     </aside>
   );

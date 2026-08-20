@@ -254,6 +254,29 @@ export default function Dashboard() {
                 <span style={{ width:7, height:7, background:'#16a34a', borderRadius:'50%', display:'inline-block', animation:'pulse-dot 1.5s infinite' }}/>
                 실시간 연동
               </span>
+              <a
+                href="https://school-mdm.onrender.com/"
+                target="_blank"
+                rel="noreferrer"
+                title="클릭하면 웹 브라우저에서 24시간 중앙 클라우드 상태를 확인합니다"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 5,
+                  fontSize: 11.5,
+                  fontWeight: 700,
+                  color: '#4338ca',
+                  background: '#e0e7ff',
+                  border: '1px solid #c7d2fe',
+                  padding: '3px 10px',
+                  borderRadius: 99,
+                  textDecoration: 'none',
+                  boxShadow: '0 1px 2px rgba(0,0,0,0.05)',
+                  cursor: 'pointer'
+                }}
+              >
+                🌐 클라우드: <span style={{ textDecoration: 'underline' }}>https://school-mdm.onrender.com/</span>
+              </a>
             </div>
             <div style={{ display:'flex', alignItems:'center', gap:8 }}>
               <button className="btn btn-ghost btn-sm" onClick={() => setShowGuide(true)}>❓ 사용법</button>
