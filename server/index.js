@@ -54,7 +54,7 @@ const io = new Server(server, {
 });
 
 // 24시간 상시 중앙 상태 보관소 (Central Cloud State Store)
-const tabletSockets = new Map(); // serial -> socket
+const tabletSockets = new Map(); // serial -> socket (lowercase serial key)
 const socketDevices = new Map(); // serial -> deviceInfo
 const disconnectTimers = new Map(); // serial -> timer
 
@@ -72,28 +72,43 @@ app.get('/devices', (req, res) => {
   res.json(Array.from(socketDevices.values()));
 });
 
+// 소켓 찾기 도우미 (대소문자 무관 검색)
+function findTabletSocket(serial) {
+  if (!serial) return null;
+  const targetLower = serial.toLowerCase().trim();
+  for (const [keySocketSerial, s] of tabletSockets.entries()) {
+    if (keySocketSerial.toLowerCase().trim() === targetLower) {
+      return s;
+    }
+  }
+  return null;
+}
+
 // Socket.IO 양방향 중계 및 상시 보관 로직
 io.on('connection', (socket) => {
   console.log(`[Socket Connected] ID: ${socket.id}, IP: ${socket.handshake.address}`);
 
-  // 태블릿이 전송하는 모든 이벤트 감지 (만능 트래커)
+  // 만능 이벤트 수신 트래커
   socket.onAny((eventName, ...args) => {
-    if (eventName === 'admin-connect' || eventName === 'mirror-frame') return;
+    if (eventName === 'admin-connect' || eventName === 'mirror-frame' || eventName === 'control-command') return;
 
     const payload = args[0];
     const deviceInfo = typeof payload === 'string' ? (tryParseJson(payload) || { serial: payload }) : payload;
     const serial = deviceInfo?.serial || deviceInfo?.mac || deviceInfo?.deviceId;
     
-    if (serial && !socketDevices.has(serial)) {
-      tabletSockets.set(serial, socket);
+    if (serial) {
+      const lowerKey = serial.toLowerCase().trim();
+      tabletSockets.set(lowerKey, socket);
+      const existing = socketDevices.get(lowerKey) || {};
       const dev = {
+        ...existing,
         ...deviceInfo,
         serial,
         state: 'online',
         socketId: socket.id,
         lastSeen: new Date().toISOString()
       };
-      socketDevices.set(serial, dev);
+      socketDevices.set(lowerKey, dev);
       io.to('admin-room').emit('device-update', Array.from(socketDevices.values()));
     }
   });
@@ -106,21 +121,22 @@ io.on('connection', (socket) => {
     socket.emit('device-update', allDevices);
   });
 
-  // 태블릿 24시간 상시 등록 및 상태 자동 최신화
+  // 태블릿 24시간 상시 등록
   socket.on('register', (deviceInfo) => {
     let parsed = deviceInfo;
     if (typeof deviceInfo === 'string') parsed = tryParseJson(deviceInfo) || { serial: deviceInfo };
     const { serial } = parsed || {};
     if (!serial) return;
 
-    if (disconnectTimers.has(serial)) {
-      clearTimeout(disconnectTimers.get(serial));
-      disconnectTimers.delete(serial);
+    const lowerKey = serial.toLowerCase().trim();
+    if (disconnectTimers.has(lowerKey)) {
+      clearTimeout(disconnectTimers.get(lowerKey));
+      disconnectTimers.delete(lowerKey);
     }
 
-    tabletSockets.set(serial, socket);
+    tabletSockets.set(lowerKey, socket);
 
-    const existing = socketDevices.get(serial) || {};
+    const existing = socketDevices.get(lowerKey) || {};
     const updatedDev = {
       ...existing,
       ...parsed,
@@ -129,7 +145,7 @@ io.on('connection', (socket) => {
       socketId: socket.id,
       lastSeen: new Date().toISOString()
     };
-    socketDevices.set(serial, updatedDev);
+    socketDevices.set(lowerKey, updatedDev);
 
     console.log(`[Cloud Store Updated] Tablet Registered: ${serial} (Total Online: ${socketDevices.size})`);
 
@@ -144,7 +160,9 @@ io.on('connection', (socket) => {
     if (typeof data === 'string') parsed = tryParseJson(data) || {};
     const { serial, battery, charging, ip } = parsed || {};
     if (!serial) return;
-    const existing = socketDevices.get(serial);
+
+    const lowerKey = serial.toLowerCase().trim();
+    const existing = socketDevices.get(lowerKey);
     if (!existing) return;
 
     const updated = {
@@ -154,32 +172,54 @@ io.on('connection', (socket) => {
       ip: ip || existing.ip,
       lastSeen: new Date().toISOString()
     };
-    socketDevices.set(serial, updated);
+    socketDevices.set(lowerKey, updated);
 
     io.to('admin-room').emit('device-update', Array.from(socketDevices.values()));
   });
 
-  // 관리자 ➡️ 태블릿 제어 및 파일 배포 릴레이 명령
+  // ⭐ 관리자 ➡️ 태블릿 모든 제어 명령 (잠금 lock, 알림 toast, 해제 unlock, 키오스크 kiosk, 파일배포 등) 100% 릴레이!
   socket.on('control-command', ({ serial, command, payload }) => {
-    console.log(`[Control Command] Relay '${command}' to ${serial}`, payload);
+    console.log(`[Control Command Relay] Command: '${command}' -> Target Serial: '${serial}'`, payload);
+
+    // 1. 전체 태블릿 대상 브로드캐스트 명령 (serial === 'all' 이거나 'ALL')
+    if (serial === 'all' || serial === 'ALL') {
+      console.log(`[Control Command Broadcast] Command '${command}' to ALL tablets!`);
+      io.emit(command, payload);
+      if (command === 'lock') {
+        socket.emit('device-lock', payload);
+        io.emit('device-lock', payload);
+      }
+      return;
+    }
     
-    const existing = socketDevices.get(serial);
+    // 2. 단일/선택 태블릿 대상 제어 명령 (대소문자 무관 릴레이)
+    const targetSocket = findTabletSocket(serial);
+    if (targetSocket) {
+      console.log(`[Control Command Relay Success] Emitting '${command}' to Socket: ${targetSocket.id}`);
+      targetSocket.emit(command, payload);
+      // 호환 이중 이벤트명 발송 (lock -> device-lock 등)
+      if (command === 'lock') targetSocket.emit('device-lock', payload);
+      if (command === 'unlock') targetSocket.emit('device-unlock', payload);
+      if (command === 'toast') targetSocket.emit('show-toast', payload);
+    } else {
+      console.log(`[Control Command Relay Fallback] Socket for '${serial}' not in memory, broadcasting to all.`);
+      io.emit(command, payload);
+    }
+
+    // 메모리 상태 반영
+    const lowerKey = (serial || '').toLowerCase().trim();
+    const existing = socketDevices.get(lowerKey);
     if (existing) {
       if (command === 'lock') existing.locked = true;
       if (command === 'unlock') existing.locked = false;
       if (command === 'kiosk') existing.kioskApp = payload?.packageName;
       if (command === 'exit_kiosk') existing.kioskApp = null;
-      socketDevices.set(serial, existing);
+      socketDevices.set(lowerKey, existing);
       io.to('admin-room').emit('device-update', Array.from(socketDevices.values()));
-    }
-
-    const targetSocket = tabletSockets.get(serial);
-    if (targetSocket) {
-      targetSocket.emit(command, payload);
     }
   });
 
-  // 전체 태블릿 브로드캐스트 파일 배포 명령 (만능 호환 이벤트 전송)
+  // 전체 브로드캐스트 제어 이벤트들
   socket.on('broadcast-file-distribute', (payload) => {
     console.log('[Broadcast File Distribute]', payload);
     io.emit('file-distribute', payload);
@@ -192,22 +232,22 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', () => {
-    for (const [serial, s] of tabletSockets.entries()) {
+    for (const [lowerKey, s] of tabletSockets.entries()) {
       if (s.id === socket.id) {
-        tabletSockets.delete(serial);
+        tabletSockets.delete(lowerKey);
 
-        if (disconnectTimers.has(serial)) clearTimeout(disconnectTimers.get(serial));
+        if (disconnectTimers.has(lowerKey)) clearTimeout(disconnectTimers.get(lowerKey));
         const timer = setTimeout(() => {
-          disconnectTimers.delete(serial);
-          const dev = socketDevices.get(serial);
+          disconnectTimers.delete(lowerKey);
+          const dev = socketDevices.get(lowerKey);
           if (dev) {
-            socketDevices.set(serial, { ...dev, state: 'offline' });
+            socketDevices.set(lowerKey, { ...dev, state: 'offline' });
             const allDevs = Array.from(socketDevices.values());
             io.to('admin-room').emit('device-update', allDevs);
             io.emit('device-update', allDevs);
           }
         }, 5000);
-        disconnectTimers.set(serial, timer);
+        disconnectTimers.set(lowerKey, timer);
         break;
       }
     }
