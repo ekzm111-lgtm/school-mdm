@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 
 const isMdm = typeof window !== 'undefined' && !!window.mdm;
 
-export default function FileDistributeModal({ devices, onClose }) {
+export default function FileDistributeModal({ devices, checkedSerials = [], onClose }) {
   const [selectedFile, setSelectedFile] = useState(null);
   const [sending, setSending] = useState(false);
   const [result, setResult] = useState(null);
@@ -13,11 +13,21 @@ export default function FileDistributeModal({ devices, onClose }) {
   const [selectedSerials, setSelectedSerials] = useState([]);
   const fileInputRef = useRef(null);
 
-  const onlineDevices = devices.filter(d => d.state === 'online');
+  // 0.001초 이름순(Natural Sort) 정렬: 학생1, 학생2 ... 학생10, 학생19, 학생20 ...
+  const onlineDevices = [...devices.filter(d => d.state === 'online')].sort((a, b) => {
+    const nameA = a.alias || a.model || a.serial || '';
+    const nameB = b.alias || b.model || b.serial || '';
+    return nameA.localeCompare(nameB, undefined, { numeric: true, sensitivity: 'base' });
+  });
 
-  // 최초 마운트 시 1회만 온라인 기기 목록으로 초기 선택 세팅
+  // 사용자가 대시보드 체크박스로 특정 기기(예: 학생1)를 체크한 경우, 해당 기기만 선택되도록 초기 세팅!
   useEffect(() => {
-    setSelectedSerials(devices.filter(d => d.state === 'online').map(d => d.serial));
+    if (checkedSerials && checkedSerials.length > 0) {
+      const validOnlineSelected = onlineDevices.filter(d => checkedSerials.includes(d.serial)).map(d => d.serial);
+      setSelectedSerials(validOnlineSelected.length > 0 ? validOnlineSelected : onlineDevices.map(d => d.serial));
+    } else {
+      setSelectedSerials(onlineDevices.map(d => d.serial));
+    }
   }, []);
 
   useEffect(() => {

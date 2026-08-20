@@ -7,12 +7,19 @@ export default function BroadcastModal({ devices, onClose, title = "알림 전�
   const [sending, setSending] = useState(false);
   const [results, setResults] = useState([]);
 
+  // 0.001초 완벽 이름순 정렬 (학생1, 학생2 ... 학생10, 학생19, 학생20 ...)
+  const sortedDevices = [...devices].sort((a, b) => {
+    const nameA = a.alias || a.model || a.serial || '';
+    const nameB = b.alias || b.model || b.serial || '';
+    return nameA.localeCompare(nameB, undefined, { numeric: true, sensitivity: 'base' });
+  });
+
   const handleSend = async () => {
     if (!message.trim()) return;
     setSending(true);
     setResults([]);
     const res = [];
-    for (const d of devices) {
+    for (const d of sortedDevices) {
       if (isMdm) {
         const r = await window.mdm.sendMessage(d.serial, message);
         res.push({ serial: d.serial, model: d.model, ok: r.ok });
@@ -35,7 +42,7 @@ export default function BroadcastModal({ devices, onClose, title = "알림 전�
 
         <div className="modal-body">
           <div className="target-info">
-            총 <strong>{devices.length}대</strong>의 대상 기기에 알림을 전송합니다.
+            총 <strong>{sortedDevices.length}대</strong>의 대상 기기에 알림을 전송합니다.
           </div>
 
           <div className="form-group">

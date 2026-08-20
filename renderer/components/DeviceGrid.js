@@ -29,16 +29,12 @@ export default function DeviceGrid({ devices, onSelect, selected, filter, checke
   filtered = [...filtered].sort((a, b) => {
     if (sort === 'state')   return a.state === b.state ? 0 : a.state === 'online' ? -1 : 1;
     if (sort === 'battery') return a.battery - b.battery;
-    if (sort === 'model')   return a.model.localeCompare(b.model);
-    if (sort === 'alias') {
-      const aliasA = a.alias || '';
-      const aliasB = b.alias || '';
-      if (!aliasA && !aliasB) return a.model.localeCompare(b.model, undefined, { numeric: true });
-      if (!aliasA) return 1;
-      if (!aliasB) return -1;
-      return aliasA.localeCompare(aliasB, undefined, { numeric: true });
-    }
-    return 0;
+    if (sort === 'model')   return a.model.localeCompare(b.model, undefined, { numeric: true });
+    
+    // ⭐ 0.001초 완벽 이름순 (Natural Sort: 학생1, 학생2 ... 학생10, 학생19, 학생20 ...)
+    const nameA = a.alias || a.model || a.serial || '';
+    const nameB = b.alias || b.model || b.serial || '';
+    return nameA.localeCompare(nameB, undefined, { numeric: true, sensitivity: 'base' });
   });
 
   return (

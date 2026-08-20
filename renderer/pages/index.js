@@ -30,10 +30,25 @@ export default function Dashboard() {
   const [networkMode, setNetworkMode]     = useState('external'); // 'local' | 'external'
   const [buildStatus, setBuildStatus]     = useState(null); // null | { step, progress, message }
 
+  // 삭제된 기기 및 더미 기기 강제 영구 필터링 (로컬스토리지 연동)
+  const filterDeletedDevices = (devList) => {
+    if (!Array.isArray(devList)) return [];
+    let deletedSet = new Set();
+    try {
+      const stored = localStorage.getItem('deleted_serials');
+      if (stored) deletedSet = new Set(JSON.parse(stored));
+    } catch(e){}
+    return devList.filter(d => 
+      d.serial !== 'TEST-DEVICE-001' && 
+      d.serial?.toLowerCase() !== 'test-device-001' &&
+      !deletedSet.has(d.serial)
+    );
+  };
+
   useEffect(() => {
     if (isMdm) {
-      window.mdm.getDevices().then(d => { if (d?.length) setDevices(d); });
-      window.mdm.onDeviceUpdate(setDevices);
+      window.mdm.getDevices().then(d => { if (d) setDevices(filterDeletedDevices(d)); });
+      window.mdm.onDeviceUpdate((devs) => setDevices(filterDeletedDevices(devs)));
       // 초기 네트워크 모드 로드
       window.mdm.getNetworkMode?.().then(cfg => { if (cfg?.mode) setNetworkMode(cfg.mode); });
       // APK 빌드 진행상태 수신
@@ -54,7 +69,7 @@ export default function Dashboard() {
           const res = await fetch('http://localhost:3010/devices');
           if (res.ok) {
             const data = await res.json();
-            setDevices(data);
+            setDevices(filterDeletedDevices(data));
           }
         } catch (err) {
           console.error('Failed to fetch devices:', err);
@@ -103,9 +118,33 @@ export default function Dashboard() {
   const handleUnlockAll = async () => {
     if (!isMdm) { alert('⚠️ 실제 태블릿이 연결되어야 동작합니다.'); return; }
     setLoading('unlock');
-    for (const d of devices.filter(d => d.state === 'online' && d.locked))
+    for (const d of devices.filter(d => d.locked))
       await window.mdm.unlockDevice(d.serial);
     setLoading('');
+  };
+
+  const handleUnlockSelected = async () => {
+    if (!isMdm) return;
+    const selectedDevs = devices.filter(d => checkedSerials.includes(d.serial));
+    if (selectedDevs.length === 0) return;
+    setLoading('unlock_selected');
+    for (const d of selectedDevs) {
+      await window.mdm.unlockDevice(d.serial);
+    }
+    setLoading('');
+    setCheckedSerials([]);
+  };
+
+  const handleLockSelected = async () => {
+    if (!isMdm) return;
+    const selectedDevs = devices.filter(d => checkedSerials.includes(d.serial));
+    if (selectedDevs.length === 0) return;
+    setLoading('lock_selected');
+    for (const d of selectedDevs) {
+      await window.mdm.lockDevice(d.serial);
+    }
+    setLoading('');
+    setCheckedSerials([]);
   };
 
   const handleForceRefresh = async () => {
@@ -232,22 +271,6 @@ export default function Dashboard() {
                 🔄 {loading === 'refresh' ? '불러오는 중...' : '다시 불러오기'}
               </button>
 
-              {/* ── 네트워크 모드 토글 ── */}
-              <button
-                onClick={handleNetworkModeToggle}
-                title={networkMode === 'local' ? '현재: 로컬 WiFi 직접연결 → 클릭하면 외부망으로 전환' : '현재: 외부망(Cloudflare) → 클릭하면 로컬 WiFi로 전환'}
-                style={{
-                  display:'flex', alignItems:'center', gap:5, padding:'5px 12px', borderRadius:8,
-                  border:`1.5px solid ${networkMode === 'local' ? '#16a34a' : '#6366f1'}`,
-                  background: networkMode === 'local' ? '#dcfce7' : '#eef2ff',
-                  color: networkMode === 'local' ? '#15803d' : '#4f46e5',
-                  cursor:'pointer', fontSize:12, fontWeight:700, transition:'all 0.2s'
-                }}
-              >
-                <span style={{ fontSize:14 }}>{networkMode === 'local' ? '📶' : '🌐'}</span>
-                {networkMode === 'local' ? '로컬 WiFi' : '외부망'}
-              </button>
-
               {/* ── APK 자동 배포 버튼 (항상 노출) ── */}
               <button className="btn btn-ghost btn-sm"
                 onClick={handleBuildAndDeploy}
@@ -284,6 +307,12 @@ export default function Dashboard() {
                     setBroadcastDevices(selectedOnline);
                   }} disabled={!!loading} style={{ background: '#3b82f6', color: '#ffffff', borderColor: '#2563eb', padding: '6px 12px', fontWeight: 700 }}>
                     💬 선택 알림
+                  </button>
+                  <button className="btn btn-sm" onClick={handleLockSelected} disabled={!!loading} style={{ background: '#ef4444', color: '#ffffff', borderColor: '#dc2626', padding: '6px 12px', fontWeight: 700 }}>
+                    🔒 {loading === 'lock_selected' ? '잠그는 중...' : `선택 잠금 (${checkedSerials.length}대)`}
+                  </button>
+                  <button className="btn btn-sm" onClick={handleUnlockSelected} disabled={!!loading} style={{ background: '#22c55e', color: '#ffffff', borderColor: '#16a34a', padding: '6px 12px', fontWeight: 700 }}>
+                    🔓 {loading === 'unlock_selected' ? '해제 중...' : `선택 해제 (${checkedSerials.length}대)`}
                   </button>
                 </div>
               )}
@@ -344,7 +373,19 @@ export default function Dashboard() {
           <DeviceDetail
             device={devices.find(d => d.serial === selectedDevice) ?? null}
             onClose={() => setSelectedDevice(null)}
-            onRefresh={() => window.mdm?.getDevices().then(setDevices)}
+            onRefresh={(deletedSerial) => {
+              if (deletedSerial) {
+                try {
+                  const stored = localStorage.getItem('deleted_serials');
+                  const set = stored ? new Set(JSON.parse(stored)) : new Set();
+                  set.add(deletedSerial);
+                  localStorage.setItem('deleted_serials', JSON.stringify(Array.from(set)));
+                } catch(e){}
+                setDevices(prev => filterDeletedDevices(prev.filter(d => d.serial !== deletedSerial)));
+                setCheckedSerials(prev => prev.filter(s => s !== deletedSerial));
+              }
+              window.mdm?.getDevices().then(d => setDevices(filterDeletedDevices(d)));
+            }}
           />
         )}
       </div>
@@ -358,7 +399,7 @@ export default function Dashboard() {
           onClose={() => setBroadcastDevices(null)}
         />
       )}
-      {showFileDistribute && <FileDistributeModal devices={devices} onClose={() => setShowFileDistribute(false)} />}
+      {showFileDistribute && <FileDistributeModal devices={devices} checkedSerials={checkedSerials} onClose={() => setShowFileDistribute(false)} />}
       {showGuide     && <GuideModal onClose={() => setShowGuide(false)} />}
       {showLocationManager && (
         <LocationManagerModal

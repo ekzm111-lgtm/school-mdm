@@ -43,6 +43,7 @@ class AdbManager extends EventEmitter {
       if (fs.existsSync(this.aliasesPath)) {
         const data = JSON.parse(fs.readFileSync(this.aliasesPath, 'utf8'));
         for (const key in data) {
+          if (key === 'TEST-DEVICE-001' || key.toLowerCase() === 'test-device-001') continue;
           const val = data[key];
           if (typeof val === 'string') {
             this.deviceAliases.set(key, { alias: val, group: '' });
@@ -52,6 +53,11 @@ class AdbManager extends EventEmitter {
         }
       }
       
+      // 더미 기기 파일에서 강제 삭제
+      this.deviceAliases.delete('TEST-DEVICE-001');
+      this.deviceAliases.delete('test-device-001');
+      this._saveMetadata();
+
       // 오프라인 기기 사전 등록
       this._prepopulateDevices();
     } catch (e) {
@@ -61,6 +67,7 @@ class AdbManager extends EventEmitter {
 
   _prepopulateDevices() {
     for (const [serial, val] of this.deviceAliases.entries()) {
+      if (serial === 'TEST-DEVICE-001' || serial.toLowerCase() === 'test-device-001') continue;
       if (!this.devices.has(serial)) {
         this.devices.set(serial, {
           serial,
@@ -78,6 +85,25 @@ class AdbManager extends EventEmitter {
         });
       }
     }
+    this.devices.delete('TEST-DEVICE-001');
+    this.devices.delete('test-device-001');
+  }
+
+  deleteDevice(serial) {
+    if (!serial) return;
+    const lowerKey = serial.toLowerCase().trim();
+    for (const key of Array.from(this.deviceAliases.keys())) {
+      if (key.toLowerCase().trim() === lowerKey || key === serial) {
+        this.deviceAliases.delete(key);
+      }
+    }
+    for (const key of Array.from(this.devices.keys())) {
+      if (key.toLowerCase().trim() === lowerKey || key === serial) {
+        this.devices.delete(key);
+      }
+    }
+    this._saveMetadata();
+    this.emit('device-update', this.getDevices());
   }
 
   registerKnownDevice(serial) {
@@ -151,14 +177,25 @@ class AdbManager extends EventEmitter {
 
   _mergeSocketDevices() {
     if (!this.socketDevices) return;
-    for (const [serial, socketInfo] of this.socketDevices.entries()) {
-      this.registerKnownDevice(serial);
-      const existing = this.devices.get(serial) || {};
-      const meta = this.deviceAliases.get(serial) || { alias: '', group: '' };
-      this.devices.set(serial, {
+    for (const [rawSerial, socketInfo] of this.socketDevices.entries()) {
+      if (!rawSerial) continue;
+      const lowerSerial = rawSerial.toLowerCase().trim();
+      
+      let targetSerial = rawSerial;
+      for (const existingKey of this.devices.keys()) {
+        if (existingKey.toLowerCase().trim() === lowerSerial) {
+          targetSerial = existingKey;
+          break;
+        }
+      }
+
+      this.registerKnownDevice(targetSerial);
+      const existing = this.devices.get(targetSerial) || {};
+      const meta = this.deviceAliases.get(targetSerial) || this.deviceAliases.get(rawSerial) || { alias: '', group: '' };
+      this.devices.set(targetSerial, {
         ...existing,
         ...socketInfo,
-        serial,
+        serial: targetSerial,
         alias: meta.alias || existing.alias || '',
         group: meta.group || existing.group || '',
         state: socketInfo.state === 'online' ? 'online' : (existing.state || 'offline')
@@ -227,16 +264,29 @@ class AdbManager extends EventEmitter {
     }
     this.isRunning = true;
     try {
-      // 1. 소켓 연결된 기기 우선 처리 (0.001초 다이렉트 병합)
+      // 1. 소켓 연결된 기기 우선 처리 (0.001초 다이렉트 병합 & 대소문자 무관 매칭)
       if (this.socketDevices) {
-        for (const [serial, socketInfo] of this.socketDevices.entries()) {
-          this.registerKnownDevice(serial);
-          const existing = this.devices.get(serial) || {};
-          const meta = this.deviceAliases.get(serial) || { alias: '', group: '' };
-          this.devices.set(serial, {
+        for (const [rawSerial, socketInfo] of this.socketDevices.entries()) {
+          if (!rawSerial) continue;
+          const lowerSerial = rawSerial.toLowerCase().trim();
+          
+          // 기존 대시보드 25대 목록 중 대소문자 무관 키 매칭
+          let targetSerial = rawSerial;
+          for (const existingKey of this.devices.keys()) {
+            if (existingKey.toLowerCase().trim() === lowerSerial) {
+              targetSerial = existingKey;
+              break;
+            }
+          }
+
+          this.registerKnownDevice(targetSerial);
+          const existing = this.devices.get(targetSerial) || {};
+          const meta = this.deviceAliases.get(targetSerial) || this.deviceAliases.get(rawSerial) || { alias: '', group: '' };
+          
+          this.devices.set(targetSerial, {
             ...existing,
             ...socketInfo,
-            serial,
+            serial: targetSerial,
             alias: meta.alias || existing.alias || '',
             group: meta.group || existing.group || '',
             state: socketInfo.state === 'online' ? 'online' : (existing.state || 'offline')
@@ -504,18 +554,25 @@ class AdbManager extends EventEmitter {
     } catch (e) { return { ok: false, error: e }; }
   }
 
+  async pushFile(serial, localFilePath, remoteFileName) {
+    try {
+      const cleanFileName = path.basename(remoteFileName);
+      const remotePath = `/sdcard/Download/${cleanFileName}`;
+      await this._exec(`-s ${serial} push "${localFilePath}" "${remotePath}"`);
+      await this._exec(`-s ${serial} shell "am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d file://${remotePath}"`);
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  }
+
   async clearDownloadFolder(serial) {
     try {
-      // 다운로드 폴더 자체를 삭제 후 다시 생성하여 와일드카드 확장 오류 방지 및 하위 폴더 전체 삭제
-      await this._exec(`-s ${serial} shell "rm -rf /sdcard/Download && mkdir /sdcard/Download"`);
-      // 미디어 라이브러리 스캔을 통해 탐색기에서 즉각 반영되도록 갱신
+      await this._exec(`-s ${serial} shell "rm -rf /sdcard/Download/* /sdcard/Download/.* /storage/emulated/0/Download/* 2>/dev/null; mkdir -p /sdcard/Download"`);
       await this._exec(`-s ${serial} shell "am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d file:///sdcard/Download"`);
       return { ok: true };
     } catch (e) {
       let errMsg = e.message || '다운로드 폴더 비우기 실패';
-      if (errMsg.includes('device') && errMsg.includes('not found')) {
-        errMsg = '태블릿이 ADB 연결 상태가 아닙니다. USB 케이블 연결 또는 WiFi 무선 디버깅 연결 상태를 확인하세요.';
-      }
       return { ok: false, error: errMsg };
     }
   }

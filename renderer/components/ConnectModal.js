@@ -128,10 +128,10 @@ export default function ConnectModal({ onClose }) {
             </div>
             
             {/* 현재 모드 표시 */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, padding: '6px 12px', background: serverConfig.mode === 'local' ? '#f0fdf4' : '#eef2ff', border: `1px solid ${serverConfig.mode === 'local' ? '#86efac' : '#c7d2fe'}`, borderRadius: 8, fontSize: 11.5, color: serverConfig.mode === 'local' ? '#166534' : '#4f46e5' }}>
-              <span>{serverConfig.mode === 'local' ? '📶' : '🌐'}</span>
-              <strong>{serverConfig.mode === 'local' ? '로컬 WiFi 모드' : '외부망(Cloudflare) 모드'}</strong>
-              <span style={{ opacity: 0.7 }}>자동 감지됨</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, padding: '6px 12px', background: '#eef2ff', border: '1px solid #c7d2fe', borderRadius: 8, fontSize: 11.5, color: '#4f46e5' }}>
+              <span>🌐</span>
+              <strong>24시간 영구 클라우드 모드 (https://school-mdm.onrender.com)</strong>
+              <span style={{ opacity: 0.7 }}>자동 고정됨</span>
             </div>
 
             {/* 수동 IP 입력 기능 추가 */}

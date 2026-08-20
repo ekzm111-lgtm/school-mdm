@@ -54,6 +54,9 @@ contextBridge.exposeInMainWorld('mdm', {
   // 다운로드 폴더 전체 비우기
   clearDownloadFolder: (serial) => ipcRenderer.invoke('clear-download-folder', serial),
 
+  // 기기 등록 삭제
+  deleteDevice: (serial) => ipcRenderer.invoke('delete-device', serial),
+
   // 네트워크 모드 (local: 같은 WiFi 직접 / external: Cloudflare 터널)
     setNetworkMode: (mode) => ipcRenderer.invoke('set-network-mode', mode),
     getNetworkMode: () => ipcRenderer.invoke('get-network-mode'),

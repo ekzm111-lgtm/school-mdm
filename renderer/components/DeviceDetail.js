@@ -301,7 +301,20 @@ export default function DeviceDetail({ device, onClose, onRefresh }) {
             onClick={handleClearDownload}
             style={{ gridColumn: 'span 2', marginTop: 6, background: '#fee2e2', color: '#dc2626', border: '1px solid #fca5a5' }}
           >
-            {loading === 'clearDownload' ? '⏳ 삭제 중... 잠시만 기다려주세요' : '🗑️ 다운로드 폴더 전체 비우기'}
+            {loading === 'clearDownload' ? '⏳ 삭제 중... 잠시만 기다려주세요' : '🧹 다운로드 폴더 전체 비우기'}
+          </button>
+          <button
+            className="btn btn-ghost btn-sm"
+            onClick={async () => {
+              if (confirm(`'${d.alias || d.model} (${d.serial})' 기기를 관리 목록에서 삭제하시겠습니까?`)) {
+                await window.mdm?.deleteDevice(d.serial);
+                onClose();
+                if (onRefresh) onRefresh(d.serial);
+              }
+            }}
+            style={{ gridColumn: 'span 2', marginTop: 4, background: '#f1f5f9', color: '#64748b', border: '1px solid #cbd5e1' }}
+          >
+            🗑️ 기기 목록에서 영구 삭제
           </button>
         </div>
       </div>

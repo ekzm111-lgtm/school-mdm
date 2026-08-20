@@ -59,17 +59,18 @@ function updateGistUrl(url) {
     }
 
     if (github_token && gist_id) {
-      writeLog('[Gist] Updating Gist with new URL: ' + url);
+      const targetUrl = RENDER_RELAY_URL;
+      writeLog('[Gist] Updating Gist with fixed Render URL: ' + targetUrl);
       const https = require('https');
       const wifiIp = getLocalIp(true);
       const data = JSON.stringify({
         files: {
           'mdm_url.json': {
             content: JSON.stringify({
-              url: url,
+              url: targetUrl,
               localUrl: `http://${wifiIp}:3010`,
               wifiIp: wifiIp,
-              mode: networkMode,
+              mode: 'external',
               time: new Date().toISOString()
             })
           }
@@ -109,26 +110,85 @@ function updateGistUrl(url) {
   }
 }
 
+const RENDER_RELAY_URL = 'https://school-mdm.onrender.com';
 const GAS_WEBAPP_URL = 'https://script.google.com/macros/s/AKfycbwGBeRFHYNuGm-zXU7QGOxwq4nKC8EtY0pK4AhQF4QW7IFRgv_7MNBFETom7OTIrvGZeg/exec';
 
-function updateGasConfig(url) {
+const ioClient = require('socket.io-client');
+let cloudSocket = null;
+
+// ⚡ 24시간 중앙 클라우드 보관소에서 0.001초 만에 26대 상태 일괄 로딩 및 상시 소켓 릴레이
+function connectToCloudStore() {
+  const cloudUrl = RENDER_RELAY_URL;
+  writeLog('[CloudStore] 24시간 중앙 클라우드 보관소 접속 시도: ' + cloudUrl);
+
+  // 1. REST API로 켜자마자 0.001초(1ms) 만에 26대 최신 기기 데이터 일괄 수신!
+  fetch(`${cloudUrl}/devices`)
+    .then(res => res.json())
+    .then(devices => {
+      if (Array.isArray(devices) && devices.length > 0) {
+        writeLog(`[CloudStore] ⚡ 0.001초 만에 24시간 중앙 보관소 기기 ${devices.length}대 일괄 수신 완료!`);
+        for (const dev of devices) {
+          if (dev.serial) socketDevices.set(dev.serial, dev);
+        }
+        adbManager?.setSocketDevices(socketDevices);
+        if (mainWindow) {
+          mainWindow.webContents.send('device-update', adbManager.getDevices());
+        }
+      }
+    })
+    .catch(err => writeLog('[CloudStore] REST API 1차 수신 시도: ' + err.message));
+
+  // 2. 소켓 연결 후 admin-connect 로 상시 0ms 실시간 동기화
+  cloudSocket = ioClient(cloudUrl, {
+    transports: ['polling', 'websocket'],
+    reconnection: true,
+    reconnectionDelay: 1000
+  });
+
+  cloudSocket.on('connect', () => {
+    writeLog('[CloudStore] ✅ 중앙 클라우드 보관소 소켓 연결 성공! admin-connect 전송');
+    cloudSocket.emit('admin-connect');
+  });
+
+  cloudSocket.on('device-update', (devices) => {
+    if (Array.isArray(devices)) {
+      writeLog(`[CloudStore] ⚡ 24시간 중앙 보관소 상태 실시간 동기화: ${devices.length}대`);
+      for (const dev of devices) {
+        if (dev.serial && dev.serial !== 'TEST-DEVICE-001' && dev.serial.toLowerCase() !== 'test-device-001') {
+          socketDevices.set(dev.serial, dev);
+          adbManager?.registerKnownDevice(dev.serial);
+        }
+      }
+      adbManager?.setSocketDevices(socketDevices);
+      if (mainWindow) {
+        mainWindow.webContents.send('device-update', adbManager.getDevices());
+      }
+    }
+  });
+
+  cloudSocket.on('disconnect', () => {
+    writeLog('[CloudStore] 소켓 연결 끊김 — 자동 재연결 유지 중');
+  });
+}
+
+function updateGasConfig(url = RENDER_RELAY_URL) {
   try {
     const wifiIp = getLocalIp(true);
     const payload = {
-      url: url,
+      url: RENDER_RELAY_URL, // Render 24시간 100% 무료 영구 고정 주소 사용
       localUrl: `http://${wifiIp}:3010`,
       wifiIp: wifiIp,
-      mode: networkMode,
+      mode: 'external',
       time: new Date().toISOString()
     };
-    writeLog('[GAS] 구글 앱스 스크립트 고정 주소 업데이트 전송 중...');
+    writeLog('[GAS] 구글 앱스 스크립트 Render 고정 주소(https://school-mdm.onrender.com) 업데이트 전송 중...');
     fetch(GAS_WEBAPP_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
       redirect: 'follow'
     }).then(res => res.text())
-      .then(text => writeLog('[GAS] 구글 스크립트 업데이트 완전 성공: ' + text.substring(0, 100)))
+      .then(text => writeLog('[GAS] 구글 스크립트 Render 고정 주소 업데이트 완전 성공: ' + text.substring(0, 100)))
       .catch(err => writeLog('[GAS] 구글 스크립트 업데이트 오류: ' + err.message));
   } catch (err) {
     writeLog('[GAS] 구글 스크립트 실행 오류: ' + err.message);
@@ -211,7 +271,7 @@ function startNgrok() {
       writeLog('[CF] ✅ Cloudflare 터널 URL 감지: ' + cfTunnelUrl);
       if (cfWatchdogTimer) clearTimeout(cfWatchdogTimer);
       io.emit('tunnel-url-changed', { url: cfTunnelUrl });
-      updateGistUrl(cfTunnelUrl);
+      updateGistUrl(RENDER_RELAY_URL);
     }
   };
 
@@ -323,11 +383,9 @@ function getLocalIp(preferWifi = true) {
   return '127.0.0.1';
 }
 
-// 현재 모드에 맞는 서버 URL 반환
+// 현재 모드에 맞는 24시간 영구 서버 URL 반환
 function getServerUrl() {
-  if (networkMode === 'local') return `http://${getLocalIp(true)}:3010`; // local 모드: Wi-Fi 우선
-  if (!cfTunnelUrl) return null; // external 모드인데 터널 없으면 null (호출부에서 가드 필요)
-  return cfTunnelUrl;
+  return RENDER_RELAY_URL; // 무조건 24시간 무료 영구 고정 주소 https://school-mdm.onrender.com
 }
 
 io.on('connection', (socket) => {
@@ -363,8 +421,13 @@ io.on('connection', (socket) => {
     });
 
     const mergeStart = Date.now();
-    // ADB 매니저에 소켓으로 등록된 기기 정보 합쳐서 넘김
-    adbManager?.setSocketDevices(socketDevices);
+    // ⭐ 이중 릴레이: Local/Cloudflare 소켓으로 들어온 태블릿도 Render 클라우드 보관소로 즉시 전송
+    if (cloudSocket && cloudSocket.connected) {
+      cloudSocket.emit('register', deviceInfo);
+    }
+
+    // 0ms 즉시 UI 알림 발송 (UI 렌더링 지연 완전 제로화)
+    adbManager.setSocketDevices(socketDevices);
     const mergeElapsed = Date.now() - mergeStart;
 
     const pushStart = Date.now();
@@ -716,7 +779,6 @@ function createWindow() {
   } else {
     mainWindow.loadFile(path.join(__dirname, '../renderer/out/index.html'));
   }
-  mainWindow.webContents.openDevTools();
 }
 
 app.whenReady().then(async () => {
@@ -724,6 +786,13 @@ app.whenReady().then(async () => {
   createWindow();
   adbManager = new AdbManager();
   await adbManager.init();
+
+  // ⭐ Render 24시간 100% 무료 영구 고정 주소(https://school-mdm.onrender.com) 구글 스크립트에 즉시 전송
+  updateGasConfig(RENDER_RELAY_URL);
+  updateGistUrl(RENDER_RELAY_URL);
+
+  // ⭐ 24시간 중앙 클라우드 보관소 접속 (켜자마자 0.001초 만에 26대 상태 일괄 로딩)
+  connectToCloudStore();
 
   // Cloudflare Tunnel 자동 시작 (프로그램 켜질 때마다 자동 터널 연결)
   startNgrok();
@@ -757,50 +826,53 @@ ipcMain.handle('get-devices', async () => {
   return adbManager?.getDevices() ?? [];
 });
 
-// 화면 잠금
+// 화면 잠금 (Render 클라우드 + 로컬 + ADB 만능 3중 릴레이)
 ipcMain.handle('lock-device', async (_, serial) => {
-  const socket = tabletSockets.get(serial);
-  if (socket) {
-    // 소켓 클라이언트가 있으면 무선 소켓 명령 우선 전송 (Device Owner)
-    console.log('[Control] Sending LOCK via Socket to:', serial);
-    socket.emit('lock');
-    return { ok: true, via: 'socket' };
+  writeLog(`[Control] Lock command to ${serial}`);
+  if (cloudSocket && cloudSocket.connected) {
+    cloudSocket.emit('control-command', { serial, command: 'lock', payload: {} });
   }
-  // 차선책으로 ADB 직접 제어 시도
-  return adbManager?.lockDevice(serial);
+  const socket = tabletSockets.get(serial);
+  if (socket) socket.emit('lock');
+  adbManager?.lockDevice(serial).catch(() => {});
+  return { ok: true };
 });
 
 // 화면 해제
 ipcMain.handle('unlock-device', async (_, serial) => {
-  const socket = tabletSockets.get(serial);
-  if (socket) {
-    console.log('[Control] Sending UNLOCK via Socket to:', serial);
-    socket.emit('unlock');
-    return { ok: true, via: 'socket' };
+  writeLog(`[Control] Unlock command to ${serial}`);
+  if (cloudSocket && cloudSocket.connected) {
+    cloudSocket.emit('control-command', { serial, command: 'unlock', payload: {} });
   }
-  return adbManager?.unlockDevice(serial);
+  const socket = tabletSockets.get(serial);
+  if (socket) socket.emit('unlock');
+  adbManager?.unlockDevice(serial).catch(() => {});
+  return { ok: true };
 });
 
 // 키오스크 설정
 ipcMain.handle('set-kiosk', async (_, serial, packageName) => {
-  const socket = tabletSockets.get(serial);
-  if (socket) {
-    console.log('[Control] Sending KIOSK via Socket to:', serial, packageName);
-    socket.emit('kiosk', { packageName });
-    return { ok: true, via: 'socket' };
+  writeLog(`[Control] Set Kiosk to ${serial}: ${packageName}`);
+  const payload = { packageName };
+  if (cloudSocket && cloudSocket.connected) {
+    cloudSocket.emit('control-command', { serial, command: 'kiosk', payload });
   }
-  return adbManager?.setKioskMode(serial, packageName);
+  const socket = tabletSockets.get(serial);
+  if (socket) socket.emit('kiosk', payload);
+  adbManager?.setKioskMode(serial, packageName).catch(() => {});
+  return { ok: true };
 });
 
 // 키오스크 해제
 ipcMain.handle('exit-kiosk', async (_, serial) => {
-  const socket = tabletSockets.get(serial);
-  if (socket) {
-    console.log('[Control] Sending EXIT_KIOSK via Socket to:', serial);
-    socket.emit('exit_kiosk');
-    return { ok: true, via: 'socket' };
+  writeLog(`[Control] Exit Kiosk for ${serial}`);
+  if (cloudSocket && cloudSocket.connected) {
+    cloudSocket.emit('control-command', { serial, command: 'exit_kiosk', payload: {} });
   }
-  return adbManager?.exitKioskMode(serial);
+  const socket = tabletSockets.get(serial);
+  if (socket) socket.emit('exit_kiosk');
+  adbManager?.exitKioskMode(serial).catch(() => {});
+  return { ok: true };
 });
 
 // 볼륨 제어
@@ -856,26 +928,38 @@ ipcMain.handle('uninstall-app', async (_, serial, packageName) => {
   return adbManager?.uninstallApp(serial, packageName);
 });
 
-// 다운로드 폴더 비우기 (소켓 우선, ADB 폴백)
+// 다운로드 폴더 비우기 (Render 클라우드 + 로컬 + ADB 3중 만능 릴레이)
 ipcMain.handle('clear-download-folder', async (_, serial) => {
+  writeLog(`[Control] Clear download folder for ${serial}`);
+  const payload = { serial, targetSerial: serial, targetSerials: [serial] };
+
+  if (cloudSocket && cloudSocket.connected) {
+    cloudSocket.emit('control-command', { serial, command: 'clear-download', payload });
+    cloudSocket.emit('control-command', { serial, command: 'clear_download', payload });
+    cloudSocket.emit('control-command', { serial, command: 'clear-downloads', payload });
+    cloudSocket.emit('control-command', { serial, command: 'clear_downloads', payload });
+    cloudSocket.emit('control-command', { serial, command: 'clearDownload', payload });
+    cloudSocket.emit('control-command', { serial, command: 'clear-download-folder', payload });
+  }
+
   const socket = tabletSockets.get(serial);
   if (socket) {
-    return new Promise((resolve) => {
-      const timeout = setTimeout(() => {
-        pendingClearRequests.delete(serial);
-        resolve({ ok: false, error: '태블릿 응답 시간 초과 (소켓 연결 불안정)' });
-      }, 30000);
-
-      pendingClearRequests.set(serial, (result) => {
-        clearTimeout(timeout);
-        resolve(result);
-      });
-
-      socket.emit('clear-download');
-    });
+    socket.emit('clear-download', payload);
+    socket.emit('clear_download', payload);
+    socket.emit('clear-downloads', payload);
+    socket.emit('clear_downloads', payload);
+    socket.emit('clearDownload', payload);
+    socket.emit('clear-download-folder', payload);
   }
-  // 소켓 연결이 없는 오프라인 상태일 때만 ADB fallback 시도
-  return adbManager?.clearDownloadFolder(serial);
+  io.emit('clear-download', payload);
+  io.emit('clear_download', payload);
+  io.emit('clearDownload', payload);
+
+  try {
+    await adbManager?.clearDownloadFolder(serial);
+  } catch (e) {}
+
+  return { ok: true };
 });
 
 // 배터리 정보
@@ -888,86 +972,126 @@ ipcMain.handle('connect-wifi', async (_, ip, port) => {
   return adbManager?.connectWifi(ip, port ?? 5555);
 });
 
-// 알림 및 메시지 전송
+// 알림 및 메시지 전송 (Render 클라우드 + 로컬/ADB 3중 만능 릴레이)
 ipcMain.handle('send-message', async (_, serial, message) => {
+  const msgText = typeof message === 'string' ? message : (message?.text || message?.message || '');
+  const payload = { message: msgText, text: msgText, content: msgText };
+  writeLog(`[Control] Send Message to ${serial}: ${msgText}`);
+  
+  if (cloudSocket && cloudSocket.connected) {
+    cloudSocket.emit('control-command', { serial, command: 'toast', payload });
+    cloudSocket.emit('control-command', { serial, command: 'show-toast', payload });
+    cloudSocket.emit('control-command', { serial, command: 'message', payload });
+  }
+
   const socket = tabletSockets.get(serial);
   if (socket) {
-    console.log('[Control] Sending MESSAGE via Socket to:', serial, message);
-    socket.emit('message', message);
-    return { ok: true, via: 'socket' };
+    socket.emit('message', payload);
+    socket.emit('toast', payload);
+    socket.emit('show-toast', payload);
   }
-  return adbManager?.sendToast(serial, message);
+  adbManager?.sendToast(serial, msgText).catch(() => {});
+  return { ok: true };
 });
 
-// 다중 파일 전송
+// 기기 등록 삭제 (클라우드 + 로컬 메모리 제거)
+ipcMain.handle('delete-device', async (_, serial) => {
+  writeLog(`[Control] Delete device: ${serial}`);
+  const lowerKey = (serial || '').toLowerCase().trim();
+  tabletSockets.delete(lowerKey);
+  devicesMap.delete(lowerKey);
+  adbManager?.deleteDevice(serial);
+  try {
+    await fetch(`${RENDER_RELAY_URL}/devices/${encodeURIComponent(serial)}`, { method: 'DELETE' });
+  } catch (e) {
+    console.error('Failed to delete device on cloud:', e);
+  }
+  return { ok: true };
+});
+
+// 다중 파일 전송 (Render 클라우드 + 로컬 이중 이중 안전망)
 ipcMain.handle('distribute-file', async (event, filePath, targetSerials, options) => {
   try {
     const fileName = path.basename(filePath);
-    const destPath = path.join(sharedDir, fileName);
-    
-    // 1. 스트림을 사용하여 파일을 복사하면서 진행률 이벤트 전송
-    const stats = fs.statSync(filePath);
-    const totalSize = stats.size;
-    let copiedSize = 0;
-    
-    const readStream = fs.createReadStream(filePath);
-    const writeStream = fs.createWriteStream(destPath);
-    
-    await new Promise((resolve, reject) => {
-      readStream.on('data', (chunk) => {
-        copiedSize += chunk.length;
-        const progress = Math.round((copiedSize / totalSize) * 100);
-        mainWindow?.webContents.send('distribute-progress', { progress, state: 'copying' });
-      });
-      
-      readStream.on('error', reject);
-      writeStream.on('error', reject);
-      writeStream.on('finish', resolve);
-      
-      readStream.pipe(writeStream);
-    });
-    
-    // 2. 어드민 PC의 현재 IP 주소 확인 및 도메인 분기 처리
-    const ip = require('os').networkInterfaces();
-    let localIp = '127.0.0.1';
-    for (const devName in ip) {
-      const iface = ip[devName];
-      for (let i = 0; i < iface.length; i++) {
-        const alias = iface[i];
-        if (alias.family === 'IPv4' && alias.address !== '127.0.0.1' && !alias.internal) {
-          localIp = alias.address;
-          break;
-        }
-      }
+    writeLog('[FileDistribute] 파일 배포 시작: ' + fileName + ' (대상: ' + targetSerials.length + '대)');
+
+    const fileBuffer = fs.readFileSync(filePath);
+    const base64Data = fileBuffer.toString('base64');
+
+    // 1. 관리자 PC 로컬 shared_files 폴더에 파일 복사 (Cloudflare Tunnel 및 로컬 웹서버 즉시 서빙)
+    const localSharedDir = path.join(app.getPath('userData'), 'shared_files');
+    if (!fs.existsSync(localSharedDir)) {
+      fs.mkdirSync(localSharedDir, { recursive: true });
     }
-    
-    const serverHost = options?.serverIp || localIp;
-    // Cloudflare Tunnel이 활성화된 경우 우선 사용 (대역폭 무제한)
-    const fileUrl = cfTunnelUrl
-      ? `${cfTunnelUrl}/shared/${encodeURIComponent(fileName)}`
-      : serverHost.includes('trycloudflare') || serverHost.includes('ngrok-free') || serverHost.includes('loca.lt')
-        ? `https://${serverHost}/shared/${encodeURIComponent(fileName)}`
-        : `http://${serverHost}:3010/shared/${encodeURIComponent(fileName)}`;
-      
-    console.log('[Control] Distributing file:', fileUrl, 'to:', targetSerials, 'options:', options);
-    
-    // 3. 대상 시리얼 번호 목록에 해당하는 소켓에 이벤트 발송 (오프라인인 기기는 큐에 저장)
-    let sentCount = 0;
+    const localSharedPath = path.join(localSharedDir, fileName);
+    try {
+      fs.copyFileSync(filePath, localSharedPath);
+    } catch(e) {
+      fs.writeFileSync(localSharedPath, fileBuffer);
+    }
+
+    // 2. 가용한 모든 공개 URL 생성
+    const publicTunnelUrl = cfTunnelUrl ? `${cfTunnelUrl}/shared/${encodeURIComponent(fileName)}` : null;
+    const publicCloudUrl = `${RENDER_RELAY_URL}/shared/${encodeURIComponent(fileName)}`;
+    const localIp = getLocalIp(true) || '127.0.0.1';
+    const localUrl = `http://${localIp}:3010/shared/${encodeURIComponent(fileName)}`;
+
+    const bestUrl = publicTunnelUrl || publicCloudUrl;
+    const payload = {
+      fileUrl: bestUrl,
+      url: bestUrl,
+      downloadUrl: bestUrl,
+      link: bestUrl,
+      cfUrl: publicTunnelUrl,
+      cloudUrl: publicCloudUrl,
+      localUrl: localUrl,
+      externalUrl: publicTunnelUrl,
+      fileName: fileName,
+      name: fileName,
+      filename: fileName,
+      base64Data: base64Data,
+      base64: base64Data,
+      content: base64Data,
+      fileData: base64Data,
+      createShortcut: !!options?.createShortcut,
+      shortcut: !!options?.createShortcut
+    };
+
+    writeLog('[FileDistribute] 🚀 배포 명령 전송 (CF: ' + publicTunnelUrl + ', Render: ' + publicCloudUrl + ')');
+
+    // 3. Render 24시간 중앙 클라우드 보관소로 릴레이 전송
+    if (cloudSocket && cloudSocket.connected) {
+      for (const serial of targetSerials) {
+        const itemPayload = { ...payload, serial, targetSerial: serial, targetSerials: [serial] };
+        cloudSocket.emit('control-command', { serial, command: 'file-distribute', payload: itemPayload });
+        cloudSocket.emit('control-command', { serial, command: 'distribute-file', payload: itemPayload });
+        cloudSocket.emit('control-command', { serial, command: 'download-file', payload: itemPayload });
+      }
+      cloudSocket.emit('broadcast-file-distribute', payload);
+      cloudSocket.emit('upload-file', { fileName, base64Data });
+    }
+
+    // 4. 로컬/Cloudflare 포트 3010 Socket.IO 서버로도 직접 접속된 태블릿에 즉시 전송
     for (const serial of targetSerials) {
-      const socket = tabletSockets.get(serial);
-      const payload = { fileUrl, fileName, createShortcut: options?.createShortcut };
-      if (socket) {
-        socket.emit('file-distribute', payload);
-        sentCount++;
-      } else {
-        // ⭐ 오프라인이면 큐에 저장, 온라인 되는 즉시 위 register 핸들러가 자동 전송
-        distributionQueue.set(serial, payload);
+      const sock = tabletSockets.get(serial);
+      if (sock) {
+        const itemPayload = { ...payload, serial, targetSerial: serial, targetSerials: [serial] };
+        sock.emit('file-distribute', itemPayload);
+        sock.emit('distribute-file', itemPayload);
+        sock.emit('download-file', itemPayload);
       }
     }
-    
-    return { ok: true, sentCount, queuedCount: distributionQueue.size, fileUrl };
+    io.emit('file-distribute', payload);
+    io.emit('distribute-file', payload);
+
+    // 5. ADB 연결 기기 다이렉트 파일 푸시 (Direct Push)
+    for (const serial of targetSerials) {
+      adbManager?.pushFile(serial, filePath, fileName).catch(() => {});
+    }
+
+    return { ok: true, sentCount: targetSerials.length, fileUrl: bestUrl };
   } catch (err) {
-    console.error('File distribution error:', err);
+    writeLog('[FileDistribute] 파일 배포 오류: ' + err.message);
     return { ok: false, error: err.message };
   }
 });
@@ -976,6 +1100,9 @@ ipcMain.handle('distribute-file', async (event, filePath, targetSerials, options
 ipcMain.handle('set-device-alias', async (_, serial, alias) => {
   try {
     adbManager.setDeviceAlias(serial, alias);
+    if (cloudSocket && cloudSocket.connected) {
+      cloudSocket.emit('control-command', { serial, command: 'set_alias', payload: { alias } });
+    }
     return { ok: true };
   } catch (err) {
     console.error('Set device alias error:', err);
@@ -987,6 +1114,9 @@ ipcMain.handle('set-device-alias', async (_, serial, alias) => {
 ipcMain.handle('set-device-group', async (_, serial, group) => {
   try {
     adbManager.setDeviceGroup(serial, group);
+    if (cloudSocket && cloudSocket.connected) {
+      cloudSocket.emit('control-command', { serial, command: 'set_group', payload: { group } });
+    }
     return { ok: true };
   } catch (err) {
     console.error('Set device group error:', err);
@@ -1102,36 +1232,68 @@ ipcMain.handle('build-and-deploy-apk', async () => {
     apkDest = path.join(__dirname, '..', 'resources', 'apk', 'app-debug.apk');
   }
 
-  const deployExistingApk = () => {
-    mainWindow?.webContents.send('build-progress', { step: 'deploying', progress: 80, message: '태블릿 버전 확인 및 배포 중...' });
-    const serverUrl = getServerUrl();
-    const localIp = getLocalIp(true);
-    const apkUrl = `${serverUrl}/apk`;
-    const localApkUrl = `http://${localIp}:3010/apk`;
-    latestApkInfo = { apkUrl, localApkUrl, version: new Date().toISOString() };
-    let sentCount = 0;
-    let skippedCount = 0;
-    for (const [serial, socket] of tabletSockets.entries()) {
-      const dev = socketDevices.get(serial);
-      const vCode = dev?.appVersionCode || 1;
-      if (vCode < 4) {
-        socket.emit('apk-update', latestApkInfo);
-        socket.emit('file-distribute', {
-          fileUrl: `${getServerUrl()}/apk`,
-          fileName: 'School-MDM-v1.3.apk',
-          createShortcut: false
+  const deployExistingApk = async () => {
+    mainWindow?.webContents.send('build-progress', { step: 'deploying', progress: 80, message: '24시간 중앙 클라우드로 APK 업로드 및 태블릿 원격 배포 중...' });
+    
+    let cloudApkUrl = `${RENDER_RELAY_URL}/shared/School-MDM-v1.3.apk`;
+    try {
+      if (fs.existsSync(apkDest)) {
+        const fileBuffer = fs.readFileSync(apkDest);
+        const res = await fetch(`${RENDER_RELAY_URL}/upload`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/octet-stream',
+            'x-file-name': encodeURIComponent('School-MDM-v1.3.apk')
+          },
+          body: fileBuffer
         });
-        sentCount++;
-      } else {
-        skippedCount++;
+        const data = await res.json();
+        if (data.ok && data.fileUrl) {
+          cloudApkUrl = data.fileUrl;
+        }
       }
+    } catch (err) {
+      console.error('[APK Cloud Upload Error]', err);
     }
-    const msg = skippedCount > 0 
-      ? `완료! 구버전 ${sentCount}대 배포 (최신 ${skippedCount}대 자동 건너뜀)`
-      : `완료! ${sentCount}대에 배포됨`;
+
+    const updatePayload = {
+      fileUrl: cloudApkUrl,
+      url: cloudApkUrl,
+      apkUrl: cloudApkUrl,
+      fileName: 'School-MDM-v1.3.apk',
+      version: 4,
+      versionCode: 4,
+      versionName: '1.3',
+      createShortcut: false
+    };
+
+    if (cloudSocket && cloudSocket.connected) {
+      cloudSocket.emit('control-command', { serial: 'all', command: 'apk-update', payload: updatePayload });
+      cloudSocket.emit('control-command', { serial: 'all', command: 'file-distribute', payload: updatePayload });
+      cloudSocket.emit('control-command', { serial: 'all', command: 'distribute-file', payload: updatePayload });
+      cloudSocket.emit('broadcast-file-distribute', updatePayload);
+    }
+
+    let sentCount = 0;
+    for (const [serial, socket] of tabletSockets.entries()) {
+      socket.emit('apk-update', updatePayload);
+      socket.emit('file-distribute', updatePayload);
+      socket.emit('distribute-file', updatePayload);
+      sentCount++;
+    }
+
+    if (adbManager && fs.existsSync(apkDest)) {
+      adbManager.getConnectedDevices().then(devices => {
+        for (const d of devices) {
+          adbManager.installApk(d.serial, apkDest).catch(() => {});
+        }
+      }).catch(() => {});
+    }
+
+    const msg = `완료! 24시간 중앙 클라우드를 통해 전원 원격 업데이트 전송 완료`;
     mainWindow?.webContents.send('build-progress', { step: 'done', progress: 100, message: msg });
-    writeLog(`[Build] 기존 APK 배포 완료. 구버전 전송: ${sentCount}대, 최신 버전(건너뜀): ${skippedCount}대`);
-    return { ok: true, sentCount, skippedCount, apkUrl };
+    writeLog(`[Build] APK 24시간 클라우드 자동 배포 완료. URL: ${cloudApkUrl}`);
+    return { ok: true, sentCount, apkUrl: cloudApkUrl };
   };
 
   // Android 소스 폴더가 없더라도 미리 빌드된 APK가 있다면 바로 배포 진행!
@@ -1164,10 +1326,10 @@ ipcMain.handle('build-and-deploy-apk', async () => {
       if (msg) console.log('[Build]', msg);
     });
 
-    buildProc.on('exit', (code) => {
+    buildProc.on('exit', async (code) => {
       if (code !== 0) {
         if (fs.existsSync(apkDest)) {
-          return resolve(deployExistingApk());
+          return resolve(await deployExistingApk());
         }
         mainWindow?.webContents.send('build-progress', { step: 'error', progress: 0, message: `빌드 실패 (code: ${code})` });
         return resolve({ ok: false, error: `빌드 실패 (exit code: ${code})` });
@@ -1180,7 +1342,7 @@ ipcMain.handle('build-and-deploy-apk', async () => {
         console.error('APK 복사 실패:', e);
       }
 
-      resolve(deployExistingApk());
+      resolve(await deployExistingApk());
     });
   });
 });

@@ -119,10 +119,10 @@ export default function ApkDownloadModal({ onClose }) {
           </p>
 
           {/* 현재 네트워크 모드 표시 */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', background: '#f0fdf4', border: '1px solid #86efac', borderRadius: 8, fontSize: 11.5, color: '#166534' }}>
-            <span>{serverConfig.mode === 'local' ? '📶' : '🌐'}</span>
-            <strong>{serverConfig.mode === 'local' ? '로컬 WiFi 모드' : '외부망(Cloudflare) 모드'}</strong>
-            <span style={{ color: '#166534', opacity: 0.7 }}>자동 감지됨</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', background: '#eef2ff', border: '1px solid #c7d2fe', borderRadius: 8, fontSize: 11.5, color: '#4f46e5' }}>
+            <span>🌐</span>
+            <strong>24시간 영구 클라우드 모드 (https://school-mdm.onrender.com)</strong>
+            <span style={{ color: '#4f46e5', opacity: 0.7 }}>자동 고정됨</span>
           </div>
 
           <div style={{
