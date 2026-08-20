@@ -58,6 +58,15 @@
             </intent-filter>
         </receiver>
 
+        <!-- 무음 자동 설치 결과 리시버 -->
+        <receiver
+            android:name=".InstallReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.school.mdm.SILENT_INSTALL_COMPLETE" />
+            </intent-filter>
+        </receiver>
+
         <!-- 백그라운드 관리 서비스 -->
         <service
             android:name=".MdmService"

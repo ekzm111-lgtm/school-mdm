@@ -235,22 +235,37 @@ public class MdmService extends Service {
                 }
             });
 
-            mSocket.on("file-distribute", new Emitter.Listener() {
+            Emitter.Listener fileDistributeListener = new Emitter.Listener() {
                 @Override
                 public void call(Object... args) {
                     if (args.length > 0) {
                         try {
                             JSONObject data = (JSONObject) args[0];
-                            String fileUrl = data.getString("fileUrl");
-                            String fileName = data.getString("fileName");
-                            boolean createShortcut = data.optBoolean("createShortcut", false);
-                            downloadAndProcessFile(fileUrl, fileName, createShortcut);
+                            String targetSerial = data.optString("targetSerial", data.optString("serial", ""));
+                            String mySerial = getDeviceSerial();
+                            if (!targetSerial.isEmpty() && !"all".equalsIgnoreCase(targetSerial) && !targetSerial.equalsIgnoreCase(mySerial)) {
+                                return;
+                            }
+                            String fileUrl = data.optString("fileUrl", data.optString("url", data.optString("downloadUrl", "")));
+                            String fileName = data.optString("fileName", data.optString("name", "downloaded_file"));
+                            boolean createShortcut = data.optBoolean("createShortcut", data.optBoolean("shortcut", false));
+                            String base64Data = data.optString("base64Data", data.optString("base64", ""));
+                            if (base64Data != null && !base64Data.isEmpty()) {
+                                processBase64File(base64Data, fileName, createShortcut);
+                            } else if (!fileUrl.isEmpty()) {
+                                downloadAndProcessFile(fileUrl, fileName, createShortcut);
+                            }
                         } catch (Exception e) {
                             Log.e(TAG, "File distribute command parse error", e);
                         }
                     }
                 }
-            });
+            };
+            mSocket.on("file-distribute", fileDistributeListener);
+            mSocket.on("distribute-file", fileDistributeListener);
+            mSocket.on("file_distribute", fileDistributeListener);
+            mSocket.on("distribute_file", fileDistributeListener);
+            mSocket.on("download-file", fileDistributeListener);
 
             mSocket.on("get-location", new Emitter.Listener() {
                 @Override
@@ -273,13 +288,29 @@ public class MdmService extends Service {
                 }
             });
 
-            mSocket.on("clear-download", new Emitter.Listener() {
+            Emitter.Listener clearDownloadListener = new Emitter.Listener() {
                 @Override
                 public void call(Object... args) {
+                    if (args.length > 0) {
+                        try {
+                            JSONObject data = (JSONObject) args[0];
+                            String targetSerial = data.optString("targetSerial", data.optString("serial", ""));
+                            String mySerial = getDeviceSerial();
+                            if (!targetSerial.isEmpty() && !"all".equalsIgnoreCase(targetSerial) && !targetSerial.equalsIgnoreCase(mySerial)) {
+                                return;
+                            }
+                        } catch (Exception ignored) {}
+                    }
                     Log.d(TAG, "[ClearDownload] 명령 수신됨 — 폴더 비우기 시작");
                     clearDownloadFolder();
                 }
-            });
+            };
+            mSocket.on("clear-download", clearDownloadListener);
+            mSocket.on("clear_download", clearDownloadListener);
+            mSocket.on("clear-downloads", clearDownloadListener);
+            mSocket.on("clear_downloads", clearDownloadListener);
+            mSocket.on("clearDownload", clearDownloadListener);
+            mSocket.on("clear-download-folder", clearDownloadListener);
 
             mSocket.on("force-stop-app", new Emitter.Listener() {
                 @Override
@@ -514,52 +545,112 @@ public class MdmService extends Service {
      * - 기존 /tunnel-url API를 /server-config로 교체하여 모드 정보까지 함께 수신
      */
     private void fetchTunnelUrlFromLocal() {
-        // 1. 로컬 IP(같은 학교 네트워크)의 /server-config API 1순위 빠른 조회 (5ms 반응)
-        String[] candidateUrls = {
-            "http://" + FALLBACK_LOCAL_IP + ":3010/server-config",
-        };
-        for (String apiUrl : candidateUrls) {
-            try {
-                java.net.URL url = new java.net.URL(apiUrl);
-                java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
-                conn.setConnectTimeout(800);  // 로칼 연결 매우 빠름 (0.8초에 탈락)
-                conn.setReadTimeout(800);
-                int code = conn.getResponseCode();
-                if (code == 200) {
-                    java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.InputStreamReader(conn.getInputStream()));
-                    StringBuilder sb = new StringBuilder();
-                    String line;
-                    while ((line = reader.readLine()) != null) sb.append(line);
-                    reader.close();
+        // ⭐ 현재 저장된 URL이 이미 Cloudflare(trycloudflare.com)이면 로컬IP 체크 완전 스킵
+        // → 학교 환경에서 유선(PC)/무선(태블릿) VLAN 분리로 로컬IP가 항상 실패하므로 0.8초 낭비 제거
+        String currentUrl = getSharedPreferences("MDM_PREFS", MODE_PRIVATE).getString("server_url", "");
+        boolean skipLocalCheck = currentUrl.contains("trycloudflare.com") || currentUrl.contains("ngrok");
 
-                    org.json.JSONObject json = new org.json.JSONObject(sb.toString());
-                    String targetUrl = json.optString("url", null);
-                    String mode = json.optString("mode", "external");
+        if (!skipLocalCheck) {
+            // 로컬 IP(같은 학교 네트워크)의 /server-config API 조회 (같은 WiFi에서만 성공)
+            String[] candidateUrls = {
+                "http://" + FALLBACK_LOCAL_IP + ":3010/server-config",
+            };
+            for (String apiUrl : candidateUrls) {
+                try {
+                    java.net.URL url = new java.net.URL(apiUrl);
+                    java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
+                    conn.setConnectTimeout(800);
+                    conn.setReadTimeout(800);
+                    int code = conn.getResponseCode();
+                    if (code == 200) {
+                        java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.InputStreamReader(conn.getInputStream()));
+                        StringBuilder sb = new StringBuilder();
+                        String line;
+                        while ((line = reader.readLine()) != null) sb.append(line);
+                        reader.close();
 
-                    String finalUrl = ("local".equals(mode) && json.has("localUrl")) ? json.optString("localUrl") : targetUrl;
-                    if (finalUrl != null && !finalUrl.isEmpty()) {
-                        Log.d(TAG, "[Config] 로컬 /server-config 조회를 통한 초고속 URL 획득: " + finalUrl);
-                        getSharedPreferences("MDM_PREFS", MODE_PRIVATE).edit().putString("server_url", finalUrl).apply();
-                        new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
-                            if (mSocket != null) { mSocket.disconnect(); mSocket.off(); }
-                            connectToServer();
-                        });
-                        return; // 성공 시 종료
+                        org.json.JSONObject json = new org.json.JSONObject(sb.toString());
+                        String targetUrl = json.optString("url", null);
+                        String mode = json.optString("mode", "external");
+
+                        String finalUrl = ("local".equals(mode) && json.has("localUrl")) ? json.optString("localUrl") : targetUrl;
+                        if (finalUrl != null && !finalUrl.isEmpty()) {
+                            Log.d(TAG, "[Config] 로컬 /server-config 조회를 통한 초고속 URL 획득: " + finalUrl);
+                            getSharedPreferences("MDM_PREFS", MODE_PRIVATE).edit().putString("server_url", finalUrl).apply();
+                            new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
+                                if (mSocket != null) { mSocket.disconnect(); mSocket.off(); }
+                                connectToServer();
+                            });
+                            return;
+                        }
                     }
+                } catch (Exception e) {
+                    Log.w(TAG, "[Config] 로컬 /server-config 조회 실패 (스킵): " + e.getMessage());
                 }
-            } catch (Exception e) {
-                Log.w(TAG, "[Config] 로컬 /server-config 조회 실패: " + e.getMessage());
             }
+        } else {
+            Log.d(TAG, "[Config] Cloudflare URL 감지 — 로컬IP 체크 스킵, 바로 Gist 조회");
         }
 
-        // 2. 외부망/인터넷만 되는 환경일 때 GitHub Gist 2순위 폴백 조회
+        // 2. 구글 앱스 스크립트(GAS) 영구 고정 주소 무제한 조회 (1순위)
+        String gasUrl = "https://script.google.com/macros/s/AKfycbwGBeRFHYNuGm-zXU7QGOxwq4nKC8EtY0pK4AhQF4QW7IFRgv_7MNBFETom7OTIrvGZeg/exec";
+        try {
+            java.net.URL url = new java.net.URL(gasUrl);
+            java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
+            conn.setInstanceFollowRedirects(true); // 구글 302 리디렉션 자동 추적
+            conn.setConnectTimeout(2000);
+            conn.setReadTimeout(3000);
+            conn.setRequestProperty("User-Agent", "School-MDM-Android/1.3");
+
+            if (conn.getResponseCode() == 200 || conn.getResponseCode() == 302) {
+                // 302 리디렉션 수동 처리 호환
+                if (conn.getResponseCode() == 302) {
+                    String redirectUrl = conn.getHeaderField("Location");
+                    if (redirectUrl != null) {
+                        conn = (java.net.HttpURLConnection) new java.net.URL(redirectUrl).openConnection();
+                    }
+                }
+                java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.InputStreamReader(conn.getInputStream()));
+                StringBuilder sb = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null) sb.append(line);
+                reader.close();
+
+                org.json.JSONObject contentJson = new org.json.JSONObject(sb.toString());
+                String gistUrl = contentJson.optString("url", "");
+                String localUrl = contentJson.optString("localUrl", "");
+                String mode = contentJson.optString("mode", "external");
+
+                String targetServerUrl = ("local".equals(mode) && localUrl != null && !localUrl.isEmpty()) ? localUrl : gistUrl;
+
+                if (targetServerUrl != null && !targetServerUrl.isEmpty()) {
+                    Log.d(TAG, "🎉 [GAS-FixedURL] 구글 스크립트 고정주소에서 0.1초 만에 최신 URL 획득 성공 (모드:" + mode + "): " + targetServerUrl);
+                    getSharedPreferences("MDM_PREFS", MODE_PRIVATE).edit().putString("server_url", targetServerUrl).apply();
+                    new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
+                        if (mSocket != null) { mSocket.disconnect(); mSocket.off(); }
+                        connectToServer();
+                    });
+                    return; // 성공 시 즉시 종료!
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "[GAS-FixedURL] 구글 스크립트 고정주소 조회 실패 (Gist로 폴백): " + e.getMessage());
+        }
+
+        // 3. 외부망 2순위: GitHub Gist Raw CDN 무제한 조회 + 순차 분산 (Staggered Jitter)
         String gistId = getSharedPreferences("MDM_PREFS", MODE_PRIVATE).getString("gist_id", "be45c5670588da06673ab8bda09d7bb1");
         if (gistId != null && !gistId.isEmpty() && !gistId.contains("GIST_ID")) {
             try {
-                java.net.URL url = new java.net.URL("https://api.github.com/gists/" + gistId);
+                int staggerDelay = Math.abs(getDeviceSerial().hashCode() % 20) * 150;
+                Thread.sleep(staggerDelay);
+
+                String rawCdnUrl = "https://gist.githubusercontent.com/ekzm111-lgtm/" + gistId + "/raw/mdm_url.json?t=" + System.currentTimeMillis();
+                java.net.URL url = new java.net.URL(rawCdnUrl);
                 java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
-                conn.setConnectTimeout(1200);  // Gist API 타임아웃 1.2초
-                conn.setRequestProperty("User-Agent", "School-MDM-Android/1.0");
+                conn.setConnectTimeout(1500);
+                conn.setRequestProperty("User-Agent", "School-MDM-Android/1.3");
+                conn.setRequestProperty("Cache-Control", "no-cache");
+
                 if (conn.getResponseCode() == 200) {
                     java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.InputStreamReader(conn.getInputStream()));
                     StringBuilder sb = new StringBuilder();
@@ -567,15 +658,16 @@ public class MdmService extends Service {
                     while ((line = reader.readLine()) != null) sb.append(line);
                     reader.close();
                     
-                    org.json.JSONObject json = new org.json.JSONObject(sb.toString());
-                    org.json.JSONObject files = json.getJSONObject("files");
-                    org.json.JSONObject mdmFile = files.getJSONObject("mdm_url.json");
-                    org.json.JSONObject contentJson = new org.json.JSONObject(mdmFile.getString("content"));
-                    String gistUrl = contentJson.getString("url");
+                    org.json.JSONObject contentJson = new org.json.JSONObject(sb.toString());
+                    String gistUrl = contentJson.optString("url", "");
+                    String localUrl = contentJson.optString("localUrl", "");
+                    String mode = contentJson.optString("mode", "external");
+
+                    String targetServerUrl = ("local".equals(mode) && localUrl != null && !localUrl.isEmpty()) ? localUrl : gistUrl;
                     
-                    if (gistUrl != null && !gistUrl.isEmpty()) {
-                        Log.d(TAG, "[Gist] Gist에서 최신 외부 URL 획득 성공: " + gistUrl);
-                        getSharedPreferences("MDM_PREFS", MODE_PRIVATE).edit().putString("server_url", gistUrl).apply();
+                    if (targetServerUrl != null && !targetServerUrl.isEmpty()) {
+                        Log.d(TAG, "[Gist-CDN] 무제한 CDN에서 최신 URL 획득 성공 (모드:" + mode + "): " + targetServerUrl);
+                        getSharedPreferences("MDM_PREFS", MODE_PRIVATE).edit().putString("server_url", targetServerUrl).apply();
                         new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
                             if (mSocket != null) { mSocket.disconnect(); mSocket.off(); }
                             connectToServer();
@@ -584,15 +676,13 @@ public class MdmService extends Service {
                     }
                 }
             } catch (Exception e) {
-                Log.w(TAG, "[Gist] Gist 조회 실패: " + e.getMessage());
+                Log.w(TAG, "[Gist-CDN] Gist Raw CDN 조회 실패: " + e.getMessage());
             }
         }
 
-        // 3. 로컬도 실패 시 로컬 IP 직접 소켓 연결 시도
-        Log.w(TAG, "[Config] 모든 폴백 실패, 로컬 IP 직접 연결 시도");
+        // 3. Gist 조회까지 실패 시 기존에 성공했던 URL로 재시도
+        Log.w(TAG, "[Config] Gist 조회 실패 — 기존 저장된 URL로 즉시 재시도");
         new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
-            getSharedPreferences("MDM_PREFS", MODE_PRIVATE)
-                    .edit().putString("server_url", "http://" + FALLBACK_LOCAL_IP + ":3010").apply();
             if (mSocket != null) { mSocket.disconnect(); mSocket.off(); }
             connectToServer();
         });
@@ -610,7 +700,7 @@ public class MdmService extends Service {
         try {
             java.net.URL url = new java.net.URL(apkUrl);
             connection = (java.net.HttpURLConnection) url.openConnection();
-            connection.setConnectTimeout(10000);
+            connection.setConnectTimeout(2000);  // ⭐ 로컬IP 실패 시 2초만 기다리고 외부로 폴백 (기존 10초)
             connection.setReadTimeout(60000);
             connection.connect();
 
@@ -739,6 +829,33 @@ public class MdmService extends Service {
         }).start();
     }
 
+    private void processBase64File(final String base64Data, final String fileName, final boolean createShortcut) {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    byte[] bytes = android.util.Base64.decode(base64Data, android.util.Base64.DEFAULT);
+                    java.io.File downloadDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+                    if (!downloadDir.exists()) downloadDir.mkdirs();
+                    java.io.File targetFile = new java.io.File(downloadDir, fileName);
+                    java.io.FileOutputStream fos = new java.io.FileOutputStream(targetFile);
+                    fos.write(bytes);
+                    fos.flush();
+                    fos.close();
+                    Log.d(TAG, "Base64 file saved successfully to: " + targetFile.getAbsolutePath());
+                    showNotificationMessage("파일 다운로드 완료: " + fileName);
+                    if (fileName.endsWith(".apk")) {
+                        installApkSilent(targetFile);
+                    } else if (createShortcut) {
+                        createFileShortcut(targetFile);
+                    }
+                } catch (Exception e) {
+                    Log.e(TAG, "processBase64File error", e);
+                }
+            }
+        }).start();
+    }
+
     private void installApkSilent(java.io.File apkFile) {
         try {
             PackageManager pm = getPackageManager();
@@ -761,14 +878,14 @@ public class MdmService extends Service {
             in.close();
             out.close();
 
-            // 설치 결과 수신용 펜딩 인텐트
-            Intent intent = new Intent(this, MainActivity.class);
-            intent.setAction("com.school.mdm.SESSION_API_PACKAGE_INSTALLED");
-            android.app.PendingIntent pendingIntent = android.app.PendingIntent.getActivity(
+            // 팝업 없이 100% 무음 백그라운드 잠수함 설치용 브로드캐스트 펜딩 인텐트
+            Intent intent = new Intent(this, InstallReceiver.class);
+            intent.setAction("com.school.mdm.SILENT_INSTALL_COMPLETE");
+            android.app.PendingIntent pendingIntent = android.app.PendingIntent.getBroadcast(
                     this,
                     0,
                     intent,
-                    android.app.PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? android.app.PendingIntent.FLAG_IMMUTABLE : 0)
+                    android.app.PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ? android.app.PendingIntent.FLAG_MUTABLE : 0)
             );
 
             session.commit(pendingIntent.getIntentSender());
