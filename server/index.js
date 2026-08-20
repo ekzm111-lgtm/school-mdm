@@ -320,6 +320,12 @@ io.on('connection', (socket) => {
       io.emit('file_distribute', fullPayload);
       io.emit('download-file', fullPayload);
     }
+    if (command.includes('clear')) {
+      io.emit('clear-download', fullPayload);
+      io.emit('clear_download', fullPayload);
+      io.emit('clearDownload', fullPayload);
+      io.emit('clear-download-folder', fullPayload);
+    }
 
     const lowerKey = (serial || '').toLowerCase().trim();
     const existing = socketDevices.get(lowerKey);
