@@ -9,15 +9,19 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 10000;
 const server = http.createServer(app);
+
+// ⭐ EIO=3 (구버전 안드로이드 Socket.IO SDK) & EIO=4 (신버전) 100% 수용 설정
 const io = new Server(server, {
-  cors: { origin: "*" },
+  cors: { 
+    origin: "*",
+    methods: ["GET", "POST"]
+  },
+  allowEIO3: true, // 필수: 구버전 안드로이드 EIO=3 프로토콜 호환 허용
   transports: ['polling', 'websocket'],
-  allowEIO3: true, // ⭐ 안드로이드 구버전/신버전 Socket.IO SDK 100% 호환 접속 허용!
   pingTimeout: 60000,
   pingInterval: 25000,
   connectTimeout: 60000,
   maxHttpBufferSize: 1e8,
-  perMessageDeflate: false,
 });
 
 // 24시간 상시 중앙 상태 보관소 (Central Cloud State Store)
@@ -28,7 +32,7 @@ const disconnectTimers = new Map(); // serial -> timer
 // Render 서버 셀프 핑 (24시간 자동 수면 방지 Keep-Alive)
 setInterval(() => {
   http.get(`http://127.0.0.1:${PORT}/`, () => {}).on('error', () => {});
-}, 4 * 60 * 1000); // 4분마다 셀프 핑으로 수면 방지
+}, 4 * 60 * 1000);
 
 // 헬스체크 및 0.001초 기기 목록 일괄 수신 REST API
 app.get('/', (req, res) => {
@@ -41,7 +45,7 @@ app.get('/devices', (req, res) => {
 
 // Socket.IO 양방향 중계 및 상시 보관 로직
 io.on('connection', (socket) => {
-  console.log(`[Socket Connected] ID: ${socket.id}, IP: ${socket.handshake.address}, Query: ${JSON.stringify(socket.handshake.query)}`);
+  console.log(`[Socket Connected] ID: ${socket.id}, IP: ${socket.handshake.address}`);
 
   // 관리자 포터블 프로그램 접속 시 24시간 상시 보관된 26대 상태 0.001초 일괄 전송!
   socket.on('admin-connect', () => {
@@ -55,7 +59,7 @@ io.on('connection', (socket) => {
   socket.on('register', (deviceInfo) => {
     const { serial } = deviceInfo || {};
     if (!serial) {
-      console.log(`[Register Rejected] Serial missing in payload:`, deviceInfo);
+      console.log(`[Register Rejected] Serial missing:`, deviceInfo);
       return;
     }
 
