@@ -17,10 +17,10 @@ if (!fs.existsSync(uploadsDir)) {
 // 📂 클라우드 파일 호스팅 엔드포인트 (/shared/파일명)
 app.use('/shared', express.static(uploadsDir));
 
-// 📤 100% 만능 클라우드 대용량 파일 업로드 API (POST, GET, JSON, Binary 100% 수용)
-app.all(['/upload', '/api/upload', '/shared/upload'], (req, res) => {
+// 📤 100% 무적 클라우드 파일 업로드 엔드포인트
+app.use('/upload', (req, res) => {
   if (req.method === 'GET') {
-    return res.send(`🚀 School-MDM Central Cloud File Uploader is Online! (POST 파일 업로드 전용)`);
+    return res.status(200).send(`🚀 School-MDM Central Cloud File Uploader is Online!`);
   }
 
   const chunks = [];
@@ -28,12 +28,11 @@ app.all(['/upload', '/api/upload', '/shared/upload'], (req, res) => {
   req.on('end', () => {
     try {
       let fileBuffer = Buffer.concat(chunks);
-      let fileName = `file_${Date.now()}.bin`;
+      let fileName = req.headers['x-file-name'] || req.headers['file-name'] || `file_${Date.now()}.bin`;
 
-      // JSON base64 바디로 전달된 경우 파싱 처리
       try {
         const text = fileBuffer.toString('utf8');
-        if (text.startsWith('{')) {
+        if (text.startsWith('{') && text.includes('base64Data')) {
           const parsed = JSON.parse(text);
           if (parsed.fileName && parsed.base64Data) {
             fileName = parsed.fileName;
@@ -42,20 +41,16 @@ app.all(['/upload', '/api/upload', '/shared/upload'], (req, res) => {
         }
       } catch(e){}
 
-      const rawFileName = req.headers['x-file-name'] || req.headers['file-name'] || fileName;
-      fileName = decodeURIComponent(rawFileName);
+      fileName = decodeURIComponent(fileName);
       const targetPath = path.join(uploadsDir, fileName);
-
       fs.writeFileSync(targetPath, fileBuffer);
 
-      const host = req.get('host') || 'school-mdm.onrender.com';
-      const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'https';
-      const fileUrl = `${protocol}://${host}/shared/${encodeURIComponent(fileName)}`;
+      const fileUrl = `https://school-mdm.onrender.com/shared/${encodeURIComponent(fileName)}`;
+      console.log(`[Cloud File Stored SUCCESS] File: ${fileName}, Size: ${fileBuffer.length} bytes -> ${fileUrl}`);
 
-      console.log(`[Cloud File Stored Success] File: ${fileName}, Size: ${fileBuffer.length} bytes -> ${fileUrl}`);
-      return res.json({ ok: true, fileUrl, fileName, size: fileBuffer.length, autoDeleteInDays: 7 });
+      return res.status(200).json({ ok: true, fileUrl, fileName, size: fileBuffer.length, autoDeleteInDays: 7 });
     } catch (e) {
-      console.error('[Upload Route Error]', e);
+      console.error('[Upload Error]', e);
       return res.status(500).json({ ok: false, error: e.message });
     }
   });
