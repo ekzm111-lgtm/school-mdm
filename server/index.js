@@ -49,7 +49,7 @@ app.use('/shared', express.static(uploadsDir));
 
 // 📤 관리자 포터블 앱에서 배포용 파일 대용량 업로드 API
 app.post('/upload', express.raw({ type: '*/*', limit: '100mb' }), (req, res) => {
-  const rawFileName = req.headers['x-file-name'] || `file_${Date.now()}`;
+  const rawFileName = req.headers['x-file-name'] || req.headers['X-File-Name'] || req.headers['file-name'] || `file_${Date.now()}`;
   const fileName = decodeURIComponent(rawFileName);
   const targetPath = path.join(uploadsDir, fileName);
 
@@ -253,9 +253,23 @@ io.on('connection', (socket) => {
       if (command === 'lock') targetSocket.emit('device-lock', payload);
       if (command === 'unlock') targetSocket.emit('device-unlock', payload);
       if (command === 'toast') targetSocket.emit('show-toast', payload);
+      if (command === 'file-distribute' || command === 'distribute-file') {
+        targetSocket.emit('file-distribute', payload);
+        targetSocket.emit('distribute-file', payload);
+        targetSocket.emit('distribute_file', payload);
+        targetSocket.emit('file_distribute', payload);
+        targetSocket.emit('download-file', payload);
+      }
     } else {
       console.log(`[Control Command Relay Fallback] Socket for '${serial}' not in memory, broadcasting to all.`);
       io.emit(command, payload);
+      if (command === 'file-distribute' || command === 'distribute-file') {
+        io.emit('file-distribute', payload);
+        io.emit('distribute-file', payload);
+        io.emit('distribute_file', payload);
+        io.emit('file_distribute', payload);
+        io.emit('download-file', payload);
+      }
     }
 
     const lowerKey = (serial || '').toLowerCase().trim();
