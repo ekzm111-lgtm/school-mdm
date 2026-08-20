@@ -17,8 +17,12 @@ if (!fs.existsSync(uploadsDir)) {
 // 📂 클라우드 파일 호스팅 엔드포인트 (/shared/파일명)
 app.use('/shared', express.static(uploadsDir));
 
-// 📤 배포용 파일 대용량 업로드 API (스트림 수집 방식: 모든 HTTP 클라이언트 100% 호환)
-app.post('/upload', (req, res) => {
+// 📤 배포용 파일 대용량 업로드 API (GET 안내 + POST 업로드 만능 처리)
+app.all('/upload', (req, res) => {
+  if (req.method === 'GET') {
+    return res.send(`🚀 School-MDM Central Cloud File Uploader is Online! (POST 파일 업로드 전용)`);
+  }
+
   const chunks = [];
   req.on('data', chunk => chunks.push(chunk));
   req.on('end', () => {
