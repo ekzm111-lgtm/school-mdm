@@ -179,10 +179,11 @@ io.on('connection', (socket) => {
     }
   });
 
-  // 전체 태블릿 브로드캐스트 파일 배포 명령
+  // 전체 태블릿 브로드캐스트 파일 배포 명령 (만능 호환 이벤트 전송)
   socket.on('broadcast-file-distribute', (payload) => {
     console.log('[Broadcast File Distribute]', payload);
     io.emit('file-distribute', payload);
+    io.emit('distribute-file', payload);
   });
 
   // 미러링 프레임 릴레이
