@@ -5,6 +5,7 @@
   "main": "main/main.js",
   "scripts": {
     "dev": "next dev renderer",
+    "start": "node server/index.js",
     "electron:build": "next build renderer && electron-builder"
   },
   "build": {
