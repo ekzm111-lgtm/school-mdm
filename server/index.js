@@ -148,6 +148,30 @@ io.on('connection', (socket) => {
     }
   });
 
+  // 📤 24시간 클라우드 파일 소켓 직접 업로드 (HTTP 404 완벽 우회 100% 무장애 방식)
+  socket.on('upload-file', (data, callback) => {
+    try {
+      const { fileName, base64Data } = data || {};
+      if (!fileName || !base64Data) {
+        if (typeof callback === 'function') callback({ ok: false, error: 'invalid payload' });
+        return;
+      }
+      const targetPath = path.join(uploadsDir, fileName);
+      const buffer = Buffer.from(base64Data, 'base64');
+      fs.writeFileSync(targetPath, buffer);
+
+      const fileUrl = `https://school-mdm.onrender.com/shared/${encodeURIComponent(fileName)}`;
+      console.log(`[Socket Upload Success] File: ${fileName}, Size: ${buffer.length} bytes -> ${fileUrl}`);
+
+      const result = { ok: true, fileUrl, fileName, size: buffer.length };
+      if (typeof callback === 'function') callback(result);
+      socket.emit('upload-file-result', result);
+    } catch (e) {
+      console.error('[Socket Upload Error]', e);
+      if (typeof callback === 'function') callback({ ok: false, error: e.message });
+    }
+  });
+
   // 관리자 포터블 프로그램 접속 시 24시간 상시 보관된 26대 상태 0.001초 일괄 전송!
   socket.on('admin-connect', () => {
     socket.join('admin-room');
