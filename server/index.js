@@ -15,6 +15,38 @@ if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
 }
 
+// ⏰ 7일(일주일) 지난 업로드 공유 파일 자동 삭제 청소기 (Retention Policy)
+const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000; // 7일 (밀리초)
+
+function cleanupOldSharedFiles() {
+  try {
+    const files = fs.readdirSync(uploadsDir);
+    const now = Date.now();
+    let deletedCount = 0;
+
+    for (const file of files) {
+      const filePath = path.join(uploadsDir, file);
+      const stats = fs.statSync(filePath);
+      // 생성/수정 시간이 7일(일주일)을 초과한 경우 자동 삭제
+      if (now - stats.mtimeMs > SEVEN_DAYS_MS) {
+        fs.unlinkSync(filePath);
+        deletedCount++;
+        console.log(`[Auto Cleanup] 7일 경과 파일 자동 삭제: ${file}`);
+      }
+    }
+    if (deletedCount > 0) {
+      console.log(`[Auto Cleanup Complete] 총 ${deletedCount}개 일주일 경과 파일 삭제 완료.`);
+    }
+  } catch (err) {
+    console.error('[Auto Cleanup Error]', err);
+  }
+}
+
+// 1시간마다 7일 이상 된 파일 자동 청소 스케줄러 실행
+setInterval(cleanupOldSharedFiles, 60 * 60 * 1000);
+// 서버 구동 즉시 1회 실행
+cleanupOldSharedFiles();
+
 // 📂 클라우드 파일 호스팅 엔드포인트 (/shared/파일명)
 app.use('/shared', express.static(uploadsDir));
 
@@ -32,8 +64,8 @@ app.post('/upload', express.raw({ type: '*/*', limit: '100mb' }), (req, res) => 
     const host = req.get('host');
     const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'https';
     const fileUrl = `${protocol}://${host}/shared/${encodeURIComponent(fileName)}`;
-    console.log(`[Cloud File Stored] File: ${fileName}, Public URL: ${fileUrl}`);
-    res.json({ ok: true, fileUrl, fileName });
+    console.log(`[Cloud File Stored] File: ${fileName}, Public URL: ${fileUrl} (7일 후 자동 삭제 예정)`);
+    res.json({ ok: true, fileUrl, fileName, autoDeleteInDays: 7 });
   });
 });
 
@@ -177,11 +209,10 @@ io.on('connection', (socket) => {
     io.to('admin-room').emit('device-update', Array.from(socketDevices.values()));
   });
 
-  // ⭐ 관리자 ➡️ 태블릿 모든 제어 명령 (잠금 lock, 알림 toast, 해제 unlock, 키오스크 kiosk, 파일배포 등) 100% 릴레이!
+  // ⭐ 관리자 ➡️ 태블릿 모든 제어 명령 릴레이
   socket.on('control-command', ({ serial, command, payload }) => {
     console.log(`[Control Command Relay] Command: '${command}' -> Target Serial: '${serial}'`, payload);
 
-    // 1. 전체 태블릿 대상 브로드캐스트 명령 (serial === 'all' 이거나 'ALL')
     if (serial === 'all' || serial === 'ALL') {
       console.log(`[Control Command Broadcast] Command '${command}' to ALL tablets!`);
       io.emit(command, payload);
@@ -192,12 +223,10 @@ io.on('connection', (socket) => {
       return;
     }
     
-    // 2. 단일/선택 태블릿 대상 제어 명령 (대소문자 무관 릴레이)
     const targetSocket = findTabletSocket(serial);
     if (targetSocket) {
       console.log(`[Control Command Relay Success] Emitting '${command}' to Socket: ${targetSocket.id}`);
       targetSocket.emit(command, payload);
-      // 호환 이중 이벤트명 발송 (lock -> device-lock 등)
       if (command === 'lock') targetSocket.emit('device-lock', payload);
       if (command === 'unlock') targetSocket.emit('device-unlock', payload);
       if (command === 'toast') targetSocket.emit('show-toast', payload);
@@ -206,7 +235,6 @@ io.on('connection', (socket) => {
       io.emit(command, payload);
     }
 
-    // 메모리 상태 반영
     const lowerKey = (serial || '').toLowerCase().trim();
     const existing = socketDevices.get(lowerKey);
     if (existing) {
@@ -219,14 +247,12 @@ io.on('connection', (socket) => {
     }
   });
 
-  // 전체 브로드캐스트 제어 이벤트들
   socket.on('broadcast-file-distribute', (payload) => {
     console.log('[Broadcast File Distribute]', payload);
     io.emit('file-distribute', payload);
     io.emit('distribute-file', payload);
   });
 
-  // 미러링 프레임 릴레이
   socket.on('mirror-frame', (data) => {
     io.to('admin-room').emit('mirror-frame-client', data);
   });
