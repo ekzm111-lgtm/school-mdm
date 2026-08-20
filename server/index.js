@@ -309,6 +309,9 @@ io.on('connection', (socket) => {
     console.log('[Broadcast File Distribute]', payload);
     io.emit('file-distribute', payload);
     io.emit('distribute-file', payload);
+    io.emit('distribute_file', payload);
+    io.emit('file_distribute', payload);
+    io.emit('download-file', payload);
   });
 
   socket.on('mirror-frame', (data) => {
