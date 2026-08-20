@@ -4,6 +4,7 @@ const path = require('path');
 const http = require('http');
 const express = require('express');
 const { Server } = require('socket.io');
+const localtunnel = require('localtunnel');
 const { spawn } = require('child_process');
 const AdbManager = require('./adb');
 
@@ -14,20 +15,28 @@ let latestApkInfo = null;
 const fs = require('fs');
 let logFile;
 
+let logBuffer = [];
+let logWriteTimer = null;
+
 function writeLog(message) {
   try {
-    if (!logFile) {
-      logFile = path.join(app.getPath('userData'), 'mdm_debug.log');
-      console.log('====== DEBUG LOG FILE PATH ======');
-      console.log(logFile);
-      console.log('=================================');
-    }
     const timeStr = new Date().toISOString();
     const logMsg = `[${timeStr}] ${message}\n`;
     console.log(logMsg.trim());
-    fs.appendFile(logFile, logMsg, 'utf8', (err) => {
-      if (err) console.error('[Log] Failed to write debug log:', err);
-    });
+    logBuffer.push(logMsg);
+
+    if (!logWriteTimer) {
+      logWriteTimer = setTimeout(() => {
+        logWriteTimer = null;
+        if (logBuffer.length === 0) return;
+        const toWrite = logBuffer.join('');
+        logBuffer = [];
+        if (!logFile) {
+          logFile = path.join(app.getPath('userData'), 'mdm_debug.log');
+        }
+        fs.appendFile(logFile, toWrite, 'utf8', () => {});
+      }, 1000);
+    }
   } catch (e) {
     console.error('[Log] Logging error:', e);
   }
@@ -148,18 +157,11 @@ function checkAndAddFirewallRule() {
 }
 
 // ─── Cloudflare Tunnel 자동 시작 · 워치독 ────────────────
-// ngrok 대비 장점: 대역폭 제한 없음, 완전 무료, 계정 불필요
 const CF_PORT = 3010;
 let cfProc = null;
 let cfRestartTimer = null;
 let cfTunnelUrl = null; // 동적으로 파싱된 공개 URL
 
-/**
- * cloudflared 바이너리 경로 결정:
- *   1순위 — EXE 패키징 시 resources/cloudflared.exe
- *   2순위 — 개발 환경: 프로젝트 루트 resources/cloudflared.exe
- *   3순위 — 시스템 PATH의 cloudflared (fallback)
- */
 function resolveCfBin() {
   if (app.isPackaged) {
     const bundled = path.join(process.resourcesPath, 'resources', 'cloudflared.exe');
@@ -170,14 +172,12 @@ function resolveCfBin() {
   return process.platform === 'win32' ? 'cloudflared.exe' : 'cloudflared';
 }
 
-// 터널 워치독: URL이 안 오거나 터널이 hang 상태면 강제 재시작
 let cfWatchdogTimer = null;
 
 function resetCfWatchdog() {
   if (cfWatchdogTimer) clearTimeout(cfWatchdogTimer);
-  // 90초 안에 터널이 URL을 못 보내면 강제 재시작
   cfWatchdogTimer = setTimeout(() => {
-    writeLog('[CF] ⚠️ 워치독: 터널이 응답 없음 — 강제 재시작');
+    writeLog('[CF] ⚠️ 워치독: 터널 응답 없음 — 강제 재시작');
     if (cfProc) {
       try { cfProc.kill('SIGKILL'); } catch(e) {}
       cfProc = null;
@@ -193,23 +193,23 @@ function startNgrok() {
   writeLog('[CF] Cloudflare Tunnel 시작... 바이너리: ' + cfBin);
 
   cfTunnelUrl = null;
-  resetCfWatchdog(); // 시작하자마자 워치독 가동
+  resetCfWatchdog();
 
   cfProc = spawn(cfBin, [
-    'tunnel', '--url', `http://127.0.0.1:${CF_PORT}`, '--no-autoupdate'
+    'tunnel', '--url', `http://127.0.0.1:${CF_PORT}`,
+    '--protocol', 'quic',
+    '--edge-ip-version', '4',
+    '--no-autoupdate'
   ], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
 
-  // stdout/stderr 모두 URL 정보가 담길 수 있음
   const onData = (d) => {
     const text = d.toString();
     console.log('[CF]', text.trim());
-    // trycloudflare.com URL 파싱
     const match = text.match(/https:\/\/[a-z0-9\-]+\.trycloudflare\.com/);
     if (match && !cfTunnelUrl) {
       cfTunnelUrl = match[0];
-      writeLog('[CF] ✅ 터널 URL 감지: ' + cfTunnelUrl);
-      if (cfWatchdogTimer) clearTimeout(cfWatchdogTimer); // URL 받았으면 워치독 해제
-      // 현재 연결된 모든 소켓 기기에게 새 URL 브로드캐스트
+      writeLog('[CF] ✅ Cloudflare 터널 URL 감지: ' + cfTunnelUrl);
+      if (cfWatchdogTimer) clearTimeout(cfWatchdogTimer);
       io.emit('tunnel-url-changed', { url: cfTunnelUrl });
       updateGistUrl(cfTunnelUrl);
     }
@@ -244,17 +244,17 @@ expressApp.use(cors());
 const server = http.createServer(expressApp);
 const io = new Server(server, {
   cors: { origin: "*" },
-  // ⭐ 구버전(polling) 및 신버전(websocket) 태블릿 모두 접속 허용
   transports: ['polling', 'websocket'],
-  // 끊어진 기기를 빠르게 감지하여 재연결 유도 (기본값 90s → 15s)
-  pingTimeout: 15000,
-  pingInterval: 5000,
-  // 연결 허용 대기시간 (25대 동시 접속 대비)
-  connectTimeout: 15000,
+  pingTimeout: 60000,
+  pingInterval: 25000,
+  connectTimeout: 60000,
+  maxHttpBufferSize: 1e8, // 100MB 버퍼 확충
+  perMessageDeflate: false, // 압축 overhead 제거로 소켓 핸드셰이크 가속
 });
 
 const tabletSockets = new Map(); // serial -> socket instance
 const socketDevices = new Map(); // serial -> deviceInfo
+const disconnectTimers = new Map(); // serial -> setTimeout handle (오프라인 유예 시간)
 const pendingClearRequests = new Map(); // serial -> resolve
 const pendingLocationRequests = new Map(); // serial -> resolve
 const pendingAppListRequests = new Map(); // serial -> resolve
@@ -262,36 +262,40 @@ const pendingUninstallRequests = new Map(); // serial -> resolve
 const distributionQueue = new Map(); // serial -> { fileUrl, fileName, createShortcut }
 
 // ─── 네트워크 모드 관리 ─────────────────────────────
-// 'local'  : 같은 WiFi망 → 태블릿이 로컬 IP로 직접 연결 (빠름, 방화벽 불필요)
-// 'external': 외부망/유선망 → Cloudflare Tunnel 경유 (학교 외부 or 유선 PC)
-let networkMode = 'external'; // 기본값: 외부망 (Cloudflare)
+// 'local'  : 같은 WiFi망 → 태블릿이 로컬 IP로 직접 연결
+// 'external': 외부망/유선망 → Cloudflare Tunnel 경유 (망 분리 학교 환경 필수)
+let networkMode = 'external'; // 망 분리 환경이므로 외부망(Cloudflare) 모드 사용
 
 function getLocalIp(preferWifi = true) {
   const ifaces = require('os').networkInterfaces();
 
-  // 가상/터널링 어댑터로 흔히 잡히는 이름 패턴 제외
-  const isVirtual = (name) => /virtual|direct|vmware|vethernet|loopback|hyper-v|tap|tun|pseudo/i.test(name);
+  // 가상/터널링 어댑터 및 불필요한 어댑터 제외 패턴
+  const isVirtual = (name) => /virtual|direct|vmware|vethernet|loopback|hyper-v|tap|tun|pseudo|bluetooth|vbox|wsl|npcap|bridge/i.test(name);
 
-  // Wi-Fi 인터페이스 후보 수집 (가상 제외)
+  // Wi-Fi 인터페이스 후보 수집 (가상 및 169.254 APIPA 제외)
   const wifiCandidates = [];
   for (const name in ifaces) {
     if (isVirtual(name)) continue;
     const lower = name.toLowerCase();
     if (lower.includes('wi-fi') || lower.includes('wifi') || lower.includes('무선') || lower === 'wi-fi') {
       for (const iface of ifaces[name]) {
-        if (iface.family === 'IPv4' && !iface.internal) wifiCandidates.push(iface.address);
+        if (iface.family === 'IPv4' && !iface.internal && !iface.address.startsWith('169.254.')) {
+          wifiCandidates.push(iface.address);
+        }
       }
     }
   }
 
-  // 이더넷 인터페이스 후보 수집 (가상 제외)
+  // 이더넷 인터페이스 후보 수집 (가상 및 169.254 APIPA 제외)
   const ethCandidates = [];
   for (const name in ifaces) {
     if (isVirtual(name)) continue;
     const lower = name.toLowerCase();
     if (lower.includes('ethernet') || lower.includes('이더넷')) {
       for (const iface of ifaces[name]) {
-        if (iface.family === 'IPv4' && !iface.internal) ethCandidates.push(iface.address);
+        if (iface.family === 'IPv4' && !iface.internal && !iface.address.startsWith('169.254.')) {
+          ethCandidates.push(iface.address);
+        }
       }
     }
   }
@@ -306,7 +310,7 @@ function getLocalIp(preferWifi = true) {
   for (const name in ifaces) {
     if (isVirtual(name)) continue;
     for (const iface of ifaces[name]) {
-      if (iface.family === 'IPv4' && !iface.internal) return iface.address;
+      if (iface.family === 'IPv4' && !iface.internal && !iface.address.startsWith('169.254.')) return iface.address;
     }
   }
 
@@ -340,7 +344,14 @@ io.on('connection', (socket) => {
       return;
     }
     
-    writeLog(`[Socket-LatencyTest] 🎯 [2단계 등록완료] 시리얼: ${serial} (핸드셰이크~등록까지 ${handShakeElapsed}s 소요), SocketID: ${socket.id}`);
+    // 재연결 시 기존 오프라인 대기 타이머가 있다면 즉시 취소 (상태 튀는 현상 방지)
+    if (disconnectTimers.has(serial)) {
+      clearTimeout(disconnectTimers.get(serial));
+      disconnectTimers.delete(serial);
+      writeLog(`[Socket] Grace Period 적용: ${serial} 기기 재연결로 오프라인 전환 취소됨`);
+    }
+
+    writeLog(`[PERF-TRACE] 🎯 [2단계 등록완료] 시리얼: ${serial} (핸드셰이크~등록까지 ${handShakeElapsed}s 소요), SocketID: ${socket.id}`);
     tabletSockets.set(serial, socket);
     
     // 기기 정보 갱신 및 상태 강제 주입
@@ -351,8 +362,19 @@ io.on('connection', (socket) => {
       lastSeen: new Date().toISOString()
     });
 
+    const mergeStart = Date.now();
     // ADB 매니저에 소켓으로 등록된 기기 정보 합쳐서 넘김
     adbManager?.setSocketDevices(socketDevices);
+    const mergeElapsed = Date.now() - mergeStart;
+
+    const pushStart = Date.now();
+    // ⚡ [실시간 갱신] 기기 등록 즉시 UI로 기기 목록 전달 (0ms 지연)
+    if (adbManager && mainWindow) {
+      mainWindow.webContents.send('device-update', adbManager.getDevices());
+    }
+    const pushElapsed = Date.now() - pushStart;
+
+    writeLog(`[PERF-TRACE] ⚡ [3단계 UI발송완료] 시리얼: ${serial} (메모리병합: ${mergeElapsed}ms, UI전송: ${pushElapsed}ms)`);
 
     // 등록 즉시 현재 네트워크 모드 & 서버 URL 전달
     socket.emit('server-config', { mode: networkMode, url: getServerUrl(), localUrl: `http://${getLocalIp(true)}:3010` });
@@ -436,15 +458,32 @@ io.on('connection', (socket) => {
       if (s.id === socket.id) {
         serialFound = serial;
         tabletSockets.delete(serial);
-        const info = socketDevices.get(serial);
-        if (info) {
-          socketDevices.set(serial, { ...info, state: 'offline' });
+        
+        // 소켓 끊김 시 즉시 오프라인으로 전환하지 않고 5초간 유예 시간을 둠 (Wi-Fi 핑 튐으로 인한 무한 왔다갔다 방지)
+        if (disconnectTimers.has(serial)) {
+          clearTimeout(disconnectTimers.get(serial));
         }
+        
+        const timer = setTimeout(() => {
+          disconnectTimers.delete(serial);
+          if (!tabletSockets.has(serial)) {
+            const info = socketDevices.get(serial);
+            if (info) {
+              socketDevices.set(serial, { ...info, state: 'offline' });
+            }
+            writeLog(`[Socket] 5초 유예시간 경과 후 오프라인 확정: ${serial}`);
+            adbManager?.setSocketDevices(socketDevices);
+            if (adbManager && mainWindow) {
+              mainWindow.webContents.send('device-update', adbManager.getDevices());
+            }
+          }
+        }, 5000);
+        
+        disconnectTimers.set(serial, timer);
         break;
       }
     }
     writeLog(`[Socket] Client disconnected. SocketID: ${socket.id}, Serial: ${serialFound}`);
-    adbManager?.setSocketDevices(socketDevices);
   });
 
   socket.on('clear-download-done', (data) => {
@@ -695,7 +734,7 @@ app.whenReady().then(async () => {
     writeLog(`[Update] UI Update pushed. Total devices: ${devices.length}, Online: ${onlineCount}`);
     mainWindow?.webContents.send('device-update', devices);
   });
-  adbManager.startPolling(5000);
+  adbManager.startPolling(2000);
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
