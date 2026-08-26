@@ -121,12 +121,13 @@ function connectToCloudStore() {
   const cloudUrl = RENDER_RELAY_URL;
   writeLog('[CloudStore] 24시간 중앙 클라우드 보관소 접속 시도: ' + cloudUrl);
 
-  // 1. REST API로 켜자마자 0.001초(1ms) 만에 26대 최신 기기 데이터 일괄 수신!
+  // 1. REST API로 켜자마자 0.001초(1ms) 만에 26대 최신 기기 및 라벨/별칭 데이터 일괄 수신!
   fetch(`${cloudUrl}/devices`)
     .then(res => res.json())
     .then(devices => {
       if (Array.isArray(devices) && devices.length > 0) {
         writeLog(`[CloudStore] ⚡ 0.001초 만에 24시간 중앙 보관소 기기 ${devices.length}대 일괄 수신 완료!`);
+        adbManager?.mergeCloudAliases(devices);
         for (const dev of devices) {
           if (dev.serial) socketDevices.set(dev.serial, dev);
         }
@@ -138,6 +139,18 @@ function connectToCloudStore() {
     })
     .catch(err => writeLog('[CloudStore] REST API 1차 수신 시도: ' + err.message));
 
+  fetch(`${cloudUrl}/aliases`)
+    .then(res => res.json())
+    .then(aliases => {
+      if (aliases && typeof aliases === 'object') {
+        adbManager?.mergeCloudAliases(aliases);
+        if (mainWindow) {
+          mainWindow.webContents.send('device-update', adbManager.getDevices());
+        }
+      }
+    })
+    .catch(() => {});
+
   // 2. 소켓 연결 후 admin-connect 로 상시 0ms 실시간 동기화
   cloudSocket = ioClient(cloudUrl, {
     transports: ['polling', 'websocket'],
@@ -148,11 +161,33 @@ function connectToCloudStore() {
   cloudSocket.on('connect', () => {
     writeLog('[CloudStore] ✅ 중앙 클라우드 보관소 소켓 연결 성공! admin-connect 전송');
     cloudSocket.emit('admin-connect');
+    
+    // 로컬 PC의 라벨/별칭이 있다면 클라우드로도 상호 동기화 전송
+    const localAliases = adbManager?.getAllAliases();
+    if (localAliases && Object.keys(localAliases).length > 0) {
+      cloudSocket.emit('sync-aliases', localAliases);
+      fetch(`${cloudUrl}/aliases`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(localAliases)
+      }).catch(() => {});
+    }
+  });
+
+  cloudSocket.on('aliases-update', (aliases) => {
+    if (aliases && typeof aliases === 'object') {
+      writeLog('[CloudStore] 🏷️ 기기 라벨/별칭 클라우드 실시간 동기화 수신');
+      adbManager?.mergeCloudAliases(aliases);
+      if (mainWindow) {
+        mainWindow.webContents.send('device-update', adbManager.getDevices());
+      }
+    }
   });
 
   cloudSocket.on('device-update', (devices) => {
     if (Array.isArray(devices)) {
       writeLog(`[CloudStore] ⚡ 24시간 중앙 보관소 상태 실시간 동기화: ${devices.length}대`);
+      adbManager?.mergeCloudAliases(devices);
       for (const dev of devices) {
         if (dev.serial && dev.serial !== 'TEST-DEVICE-001' && dev.serial.toLowerCase() !== 'test-device-001') {
           socketDevices.set(dev.serial, dev);
@@ -1100,9 +1135,16 @@ ipcMain.handle('distribute-file', async (event, filePath, targetSerials, options
 ipcMain.handle('set-device-alias', async (_, serial, alias) => {
   try {
     adbManager.setDeviceAlias(serial, alias);
+    const cleanAlias = (alias || '').trim();
     if (cloudSocket && cloudSocket.connected) {
-      cloudSocket.emit('control-command', { serial, command: 'set_alias', payload: { alias } });
+      cloudSocket.emit('control-command', { serial, command: 'set_alias', payload: { alias: cleanAlias } });
+      cloudSocket.emit('sync-aliases', { [serial]: { alias: cleanAlias } });
     }
+    fetch(`${RENDER_RELAY_URL}/aliases`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ [serial]: { alias: cleanAlias } })
+    }).catch(() => {});
     return { ok: true };
   } catch (err) {
     console.error('Set device alias error:', err);
@@ -1114,9 +1156,16 @@ ipcMain.handle('set-device-alias', async (_, serial, alias) => {
 ipcMain.handle('set-device-group', async (_, serial, group) => {
   try {
     adbManager.setDeviceGroup(serial, group);
+    const cleanGroup = (group || '').trim();
     if (cloudSocket && cloudSocket.connected) {
-      cloudSocket.emit('control-command', { serial, command: 'set_group', payload: { group } });
+      cloudSocket.emit('control-command', { serial, command: 'set_group', payload: { group: cleanGroup } });
+      cloudSocket.emit('sync-aliases', { [serial]: { group: cleanGroup } });
     }
+    fetch(`${RENDER_RELAY_URL}/aliases`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ [serial]: { group: cleanGroup } })
+    }).catch(() => {});
     return { ok: true };
   } catch (err) {
     console.error('Set device group error:', err);

@@ -19,7 +19,7 @@ $RECYCLE.BIN/
 .DS_Store
 
 # Local config & aliases
-device_aliases.json
+/device_aliases.json
 .env
 .env.local
 .env.development.local

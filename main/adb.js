@@ -33,26 +33,42 @@ class AdbManager extends EventEmitter {
     const fs = require('fs');
     const { app } = require('electron');
     const oldAliasesPath = path.join(app.getPath('userData'), 'device_aliases.json');
-    try {
-      // 새로운 경로에 파일이 없고 이전 경로에 파일이 있다면 자동 마이그레이션(이전 복구) 처리
-      if (this.aliasesPath !== oldAliasesPath && !fs.existsSync(this.aliasesPath) && fs.existsSync(oldAliasesPath)) {
-        console.log('[ADB] Migrating old device_aliases.json to new location:', this.aliasesPath);
-        fs.copyFileSync(oldAliasesPath, this.aliasesPath);
-      }
+    const bundledPath = path.join(__dirname, '..', 'device_aliases.json');
+    const resourcesPath = app.isPackaged 
+      ? path.join(process.resourcesPath, 'resources', 'device_aliases.json')
+      : path.join(__dirname, '..', 'resources', 'device_aliases.json');
 
-      if (fs.existsSync(this.aliasesPath)) {
-        const data = JSON.parse(fs.readFileSync(this.aliasesPath, 'utf8'));
-        for (const key in data) {
-          if (key === 'TEST-DEVICE-001' || key.toLowerCase() === 'test-device-001') continue;
-          const val = data[key];
-          if (typeof val === 'string') {
-            this.deviceAliases.set(key, { alias: val, group: '' });
-          } else {
-            this.deviceAliases.set(key, { alias: val.alias || '', group: val.group || '' });
+    const loadFromFile = (filePath) => {
+      if (fs.existsSync(filePath)) {
+        try {
+          const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+          for (const key in data) {
+            if (key === 'TEST-DEVICE-001' || key.toLowerCase() === 'test-device-001') continue;
+            const val = data[key];
+            const existing = this.deviceAliases.get(key) || { alias: '', group: '' };
+            if (typeof val === 'string') {
+              if (val.trim() && !existing.alias) existing.alias = val.trim();
+            } else if (val && typeof val === 'object') {
+              if (val.alias && val.alias.trim() && !existing.alias) existing.alias = val.alias.trim();
+              if (val.group && val.group.trim() && !existing.group) existing.group = val.group.trim();
+            }
+            if (existing.alias || existing.group) {
+              this.deviceAliases.set(key, existing);
+            }
           }
-        }
+        } catch (e) {}
       }
-      
+    };
+
+    try {
+      // 1. 번들 기본 파일 로드
+      loadFromFile(bundledPath);
+      loadFromFile(resourcesPath);
+      // 2. 구 AppData 경로 로드
+      loadFromFile(oldAliasesPath);
+      // 3. 현재 경로 로드
+      loadFromFile(this.aliasesPath);
+
       // 더미 기기 파일에서 강제 삭제
       this.deviceAliases.delete('TEST-DEVICE-001');
       this.deviceAliases.delete('test-device-001');
@@ -62,6 +78,70 @@ class AdbManager extends EventEmitter {
       this._prepopulateDevices();
     } catch (e) {
       console.error('[ADB] loadAliases error:', e);
+    }
+  }
+
+  getAllAliases() {
+    const obj = {};
+    for (const [k, v] of this.deviceAliases.entries()) {
+      if (k === 'TEST-DEVICE-001' || k.toLowerCase() === 'test-device-001') continue;
+      if (v && (v.alias || v.group)) {
+        obj[k] = v;
+      }
+    }
+    return obj;
+  }
+
+  mergeCloudAliases(cloudData) {
+    if (!cloudData) return;
+    let changed = false;
+
+    const processItem = (serial, alias, group) => {
+      if (!serial || serial === 'TEST-DEVICE-001' || serial.toLowerCase() === 'test-device-001') return;
+      const lower = serial.toLowerCase().trim();
+      let targetKey = serial;
+      for (const k of this.deviceAliases.keys()) {
+        if (k.toLowerCase().trim() === lower) {
+          targetKey = k;
+          break;
+        }
+      }
+      const existing = this.deviceAliases.get(targetKey) || { alias: '', group: '' };
+      let itemChanged = false;
+      if (alias && typeof alias === 'string' && alias.trim() && existing.alias !== alias.trim()) {
+        existing.alias = alias.trim();
+        itemChanged = true;
+      }
+      if (group && typeof group === 'string' && group.trim() && existing.group !== group.trim()) {
+        existing.group = group.trim();
+        itemChanged = true;
+      }
+      if (itemChanged) {
+        this.deviceAliases.set(targetKey, existing);
+        changed = true;
+      }
+    };
+
+    if (Array.isArray(cloudData)) {
+      for (const dev of cloudData) {
+        if (dev && dev.serial) {
+          processItem(dev.serial, dev.alias, dev.group);
+        }
+      }
+    } else if (typeof cloudData === 'object') {
+      for (const [serial, val] of Object.entries(cloudData)) {
+        const alias = typeof val === 'string' ? val : val?.alias;
+        const group = typeof val === 'object' ? val?.group : '';
+        processItem(serial, alias, group);
+      }
+    }
+
+    if (changed) {
+      console.log('[ADB] Merged aliases from cloud store.');
+      this._saveMetadata();
+      this._prepopulateDevices();
+      this._mergeSocketDevices();
+      this._notifyUpdate();
     }
   }
 
@@ -83,6 +163,12 @@ class AdbManager extends EventEmitter {
           isDeviceOwner: false,
           mdmInstalled: false
         });
+      } else {
+        const dev = this.devices.get(serial);
+        if (dev) {
+          if (val.alias) dev.alias = val.alias;
+          if (val.group) dev.group = val.group;
+        }
       }
     }
     this.devices.delete('TEST-DEVICE-001');
@@ -122,6 +208,8 @@ class AdbManager extends EventEmitter {
     } else {
       this.deviceAliases.set(serial, existing);
     }
+    const dev = this.devices.get(serial);
+    if (dev) dev.alias = existing.alias;
     this._saveMetadata();
   }
 
@@ -133,6 +221,8 @@ class AdbManager extends EventEmitter {
     } else {
       this.deviceAliases.set(serial, existing);
     }
+    const dev = this.devices.get(serial);
+    if (dev) dev.group = existing.group;
     this._saveMetadata();
   }
 
@@ -192,12 +282,27 @@ class AdbManager extends EventEmitter {
       this.registerKnownDevice(targetSerial);
       const existing = this.devices.get(targetSerial) || {};
       const meta = this.deviceAliases.get(targetSerial) || this.deviceAliases.get(rawSerial) || { alias: '', group: '' };
+      
+      const chosenAlias = (meta.alias && meta.alias.trim()) || (socketInfo?.alias && socketInfo.alias.trim()) || existing.alias || '';
+      const chosenGroup = (meta.group && meta.group.trim()) || (socketInfo?.group && socketInfo.group.trim()) || existing.group || '';
+
+      if (chosenAlias && !meta.alias) {
+        meta.alias = chosenAlias;
+        this.deviceAliases.set(targetSerial, meta);
+        this._saveMetadata();
+      }
+      if (chosenGroup && !meta.group) {
+        meta.group = chosenGroup;
+        this.deviceAliases.set(targetSerial, meta);
+        this._saveMetadata();
+      }
+
       this.devices.set(targetSerial, {
         ...existing,
         ...socketInfo,
         serial: targetSerial,
-        alias: meta.alias || existing.alias || '',
-        group: meta.group || existing.group || '',
+        alias: chosenAlias,
+        group: chosenGroup,
         state: socketInfo.state === 'online' ? 'online' : (existing.state || 'offline')
       });
     }
@@ -282,13 +387,26 @@ class AdbManager extends EventEmitter {
           this.registerKnownDevice(targetSerial);
           const existing = this.devices.get(targetSerial) || {};
           const meta = this.deviceAliases.get(targetSerial) || this.deviceAliases.get(rawSerial) || { alias: '', group: '' };
-          
+          const chosenAlias = (meta.alias && meta.alias.trim()) || (socketInfo?.alias && socketInfo.alias.trim()) || existing.alias || '';
+          const chosenGroup = (meta.group && meta.group.trim()) || (socketInfo?.group && socketInfo.group.trim()) || existing.group || '';
+
+          if (chosenAlias && !meta.alias) {
+            meta.alias = chosenAlias;
+            this.deviceAliases.set(targetSerial, meta);
+            this._saveMetadata();
+          }
+          if (chosenGroup && !meta.group) {
+            meta.group = chosenGroup;
+            this.deviceAliases.set(targetSerial, meta);
+            this._saveMetadata();
+          }
+
           this.devices.set(targetSerial, {
             ...existing,
             ...socketInfo,
             serial: targetSerial,
-            alias: meta.alias || existing.alias || '',
-            group: meta.group || existing.group || '',
+            alias: chosenAlias,
+            group: chosenGroup,
             state: socketInfo.state === 'online' ? 'online' : (existing.state || 'offline')
           });
         }

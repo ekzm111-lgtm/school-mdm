@@ -81,23 +81,147 @@ const tabletSockets = new Map(); // serial -> socket (lowercase serial key)
 const socketDevices = new Map(); // serial -> deviceInfo
 const disconnectTimers = new Map(); // serial -> timer
 
+const aliasesFilePath = path.join(__dirname, 'device_aliases.json');
+const savedAliases = new Map();
+
+function loadAliasesFromDisk() {
+  if (fs.existsSync(aliasesFilePath)) {
+    try {
+      const raw = JSON.parse(fs.readFileSync(aliasesFilePath, 'utf8'));
+      for (const [k, v] of Object.entries(raw)) {
+        if (!k || k === 'TEST-DEVICE-001' || k.toLowerCase() === 'test-device-001') continue;
+        const lower = k.toLowerCase().trim();
+        if (typeof v === 'string') {
+          savedAliases.set(lower, { alias: v, group: '' });
+        } else if (v && typeof v === 'object') {
+          savedAliases.set(lower, { alias: v.alias || '', group: v.group || '' });
+        }
+      }
+      console.log(`[Server] Loaded ${savedAliases.size} device aliases from disk.`);
+    } catch (e) {
+      console.error('[Server] load aliases error:', e);
+    }
+  }
+}
+loadAliasesFromDisk();
+
+function saveAliasesToDisk() {
+  try {
+    const obj = {};
+    for (const [k, v] of savedAliases.entries()) {
+      if (v.alias || v.group) obj[k] = v;
+    }
+    fs.writeFileSync(aliasesFilePath, JSON.stringify(obj, null, 2), 'utf8');
+  } catch (e) {
+    console.error('[Server] save aliases error:', e);
+  }
+}
+
+function mergeAliases(incoming) {
+  let changed = false;
+  if (Array.isArray(incoming)) {
+    for (const dev of incoming) {
+      if (!dev?.serial) continue;
+      const lower = dev.serial.toLowerCase().trim();
+      const existing = savedAliases.get(lower) || { alias: '', group: '' };
+      if (dev.alias && dev.alias !== existing.alias) {
+        existing.alias = dev.alias;
+        savedAliases.set(lower, existing);
+        changed = true;
+      }
+      if (dev.group && dev.group !== existing.group) {
+        existing.group = dev.group;
+        savedAliases.set(lower, existing);
+        changed = true;
+      }
+    }
+  } else if (incoming && typeof incoming === 'object') {
+    for (const [serial, val] of Object.entries(incoming)) {
+      if (!serial) continue;
+      const lower = serial.toLowerCase().trim();
+      const existing = savedAliases.get(lower) || { alias: '', group: '' };
+      const alias = typeof val === 'string' ? val : val?.alias;
+      const group = typeof val === 'object' ? val?.group : '';
+      if (alias && alias !== existing.alias) {
+        existing.alias = alias;
+        savedAliases.set(lower, existing);
+        changed = true;
+      }
+      if (group && group !== existing.group) {
+        existing.group = group;
+        savedAliases.set(lower, existing);
+        changed = true;
+      }
+    }
+  }
+  if (changed) {
+    saveAliasesToDisk();
+  }
+  return changed;
+}
+
 // Render 서버 셀프 핑 (24시간 자동 수면 방지 Keep-Alive)
 setInterval(() => {
   http.get(`http://127.0.0.1:${PORT}/`, () => {}).on('error', () => {});
 }, 4 * 60 * 1000);
 
 function getCleanDevices() {
-  return Array.from(socketDevices.values()).filter(d => d.serial !== 'TEST-DEVICE-001' && d.serial?.toLowerCase() !== 'test-device-001');
+  const result = [];
+  const handled = new Set();
+
+  for (const [lowerKey, dev] of socketDevices.entries()) {
+    if (dev.serial === 'TEST-DEVICE-001' || dev.serial?.toLowerCase() === 'test-device-001') continue;
+    handled.add(lowerKey);
+    const meta = savedAliases.get(lowerKey) || {};
+    result.push({
+      ...dev,
+      alias: meta.alias || dev.alias || '',
+      group: meta.group || dev.group || ''
+    });
+  }
+
+  for (const [lowerKey, meta] of savedAliases.entries()) {
+    if (handled.has(lowerKey) || lowerKey === 'test-device-001') continue;
+    result.push({
+      serial: lowerKey,
+      alias: meta.alias || '',
+      group: meta.group || '',
+      model: 'SM-T720',
+      battery: 100,
+      state: 'offline',
+      lastSeen: new Date().toISOString()
+    });
+  }
+
+  return result;
 }
 
 // ⭐ 헬스체크 REST API (실제 🟢 온라인 기기 수치 100% 일치 정밀 보정!)
 app.get('/', (req, res) => {
-  const realOnlineCount = getCleanDevices().filter(x => x.state === 'online').length;
-  res.send(`🚀 School-MDM Central Cloud State Store is Running! Online Tablets: ${realOnlineCount}`);
+  const all = getCleanDevices();
+  const realOnlineCount = all.filter(x => x.state === 'online').length;
+  res.send(`🚀 School-MDM Central Cloud State Store is Running! Total Devices: ${all.length} (Online: ${realOnlineCount}, Offline: ${all.length - realOnlineCount})`);
 });
 
 app.get('/devices', (req, res) => {
   res.json(getCleanDevices());
+});
+
+app.get('/aliases', (req, res) => {
+  res.json(Object.fromEntries(savedAliases));
+});
+
+app.post('/aliases', express.json(), (req, res) => {
+  try {
+    const changed = mergeAliases(req.body);
+    if (changed) {
+      io.to('admin-room').emit('device-update', getCleanDevices());
+      io.emit('device-update', getCleanDevices());
+    }
+    res.json({ ok: true, count: savedAliases.size });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
 });
 
 // ⚡ 소켓 연결이 차단되어도 100% 동작하는 REST HTTP 명령 릴레이 API
@@ -215,6 +339,16 @@ io.on('connection', (socket) => {
     const cleanDevs = getCleanDevices();
     console.log(`[Admin Connected] SocketID: ${socket.id} — Sending cached devices immediately (${cleanDevs.length} devs)!`);
     socket.emit('device-update', cleanDevs);
+    socket.emit('aliases-update', Object.fromEntries(savedAliases));
+  });
+
+  socket.on('sync-aliases', (aliases) => {
+    console.log(`[Admin Socket] sync-aliases received:`, aliases);
+    mergeAliases(aliases);
+    const cleanDevs = getCleanDevices();
+    io.to('admin-room').emit('device-update', cleanDevs);
+    io.emit('device-update', cleanDevs);
+    io.emit('aliases-update', Object.fromEntries(savedAliases));
   });
 
   // 태블릿 24시간 상시 등록
@@ -328,14 +462,32 @@ io.on('connection', (socket) => {
     }
 
     const lowerKey = (serial || '').toLowerCase().trim();
+    if (command === 'set_alias' || command === 'set_group') {
+      const meta = savedAliases.get(lowerKey) || { alias: '', group: '' };
+      if (command === 'set_alias') meta.alias = (payload?.alias || '').trim();
+      if (command === 'set_group') meta.group = (payload?.group || '').trim();
+      savedAliases.set(lowerKey, meta);
+      saveAliasesToDisk();
+
+      const existing = socketDevices.get(lowerKey);
+      if (existing) {
+        if (command === 'set_alias') existing.alias = meta.alias;
+        if (command === 'set_group') existing.group = meta.group;
+        socketDevices.set(lowerKey, existing);
+      }
+      const cleanDevs = getCleanDevices();
+      io.to('admin-room').emit('device-update', cleanDevs);
+      io.emit('device-update', cleanDevs);
+      io.emit('aliases-update', Object.fromEntries(savedAliases));
+      return;
+    }
+
     const existing = socketDevices.get(lowerKey);
     if (existing) {
       if (command === 'lock') existing.locked = true;
       if (command === 'unlock') existing.locked = false;
       if (command === 'kiosk') existing.kioskApp = payload?.packageName;
       if (command === 'exit_kiosk') existing.kioskApp = null;
-      if (command === 'set_alias') existing.alias = payload?.alias;
-      if (command === 'set_group') existing.group = payload?.group;
       socketDevices.set(lowerKey, existing);
       io.to('admin-room').emit('device-update', getCleanDevices());
     }
